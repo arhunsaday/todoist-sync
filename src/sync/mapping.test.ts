@@ -151,10 +151,13 @@ describe('toGoogleEvent', () => {
       options,
     )
 
-    expect(event?.extendedProperties.private).toEqual({
+    expect(event?.extendedProperties.private).toMatchObject({
       todoistId: 'item-1',
       managedBy: 't2gc',
     })
+    // Records the title we wrote, so the reverse path can tell its own
+    // rendering from a genuine rename.
+    expect(event?.extendedProperties.private['titleHash']).toBeDefined()
     expect(event?.source.url).toBe('https://app.todoist.com/app/task/item-1')
   })
 
@@ -189,6 +192,7 @@ describe('toTodoistFields', () => {
 
     expect(fields).toEqual({
       content: 'Standup notes',
+      contentUnchanged: true,
       description: '',
       due: { date: '2026-08-09' },
       duration: null,

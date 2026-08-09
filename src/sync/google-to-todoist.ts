@@ -47,7 +47,12 @@ function expectedTodoistFingerprint(
     ...(current ?? { priority: 1, labels: [] }),
     id: itemId,
     project_id: projectId,
-    content: fields.content,
+    // Mirror exactly what the update sends: when the title was untouched we
+    // omit content, so the task keeps the one it already has.
+    content:
+      fields.contentUnchanged && current !== undefined
+        ? current.content
+        : fields.content,
     description: fields.description,
     due:
       fields.due === null
@@ -112,7 +117,18 @@ async function updateLinkedTask(
   if (targetProject === undefined) return
 
   const fields = toTodoistFields(event, ctx.decorationOptions())
-  const commands: TodoistCommand[] = [itemUpdate(link.todoistItemId, fields)]
+
+  // Omit content unless the title was genuinely edited. Sending our own
+  // rendered title back would flatten a markdown link in the task's name into
+  // plain text and lose the URL for good.
+  const commands: TodoistCommand[] = [
+    itemUpdate(link.todoistItemId, {
+      ...(fields.contentUnchanged ? {} : { content: fields.content }),
+      description: fields.description,
+      due: fields.due,
+      duration: fields.duration,
+    }),
+  ]
 
   // Dragging an event to another calendar moves the task to that project.
   if (targetProject !== link.todoistProjectId) {
@@ -158,7 +174,13 @@ async function createTaskForForeignEvent(
   if (projectId === undefined) return
 
   const fields = toTodoistFields(event, ctx.decorationOptions())
-  const command = itemAdd(projectId, fields)
+  // A brand new task always needs its content, whatever the hash comparison said.
+  const command = itemAdd(projectId, {
+    content: fields.content,
+    description: fields.description,
+    due: fields.due,
+    duration: fields.duration,
+  })
   const response = await ctx.todoist.executeCommands([command])
   const itemId = response.temp_id_mapping[command.temp_id]
 

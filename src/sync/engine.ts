@@ -6,11 +6,13 @@ import {
   removeNote,
   removeNotesForItem,
 } from '../db/items.js'
+import * as links from '../db/links.js'
 import * as state from '../db/state.js'
-import { SyncTokenExpiredError } from '../google/client.js'
+import { SyncTokenExpiredError, todoistIdOf } from '../google/client.js'
 import { logger } from '../logger.js'
 import type { TodoistItem, TodoistNote } from '../todoist/types.js'
 import { createSyncContext, type SyncContext, type SyncContextDeps } from './context.js'
+import { googleFingerprint } from './fingerprint.js'
 import { applyGoogleEvent } from './google-to-todoist.js'
 import { applyTodoistItem } from './todoist-to-google.js'
 
@@ -88,6 +90,12 @@ export class SyncEngine {
   async resyncAll(): Promise<void> {
     const { db } = this.ctx
 
+    // Re-link before syncing. Without this, a resync run against a wiped link
+    // table sees every task as new and creates a second event for each one —
+    // the existing events are already there, tagged, but nothing points at
+    // them. Adopting them first makes a resync safe to run unconditionally.
+    await this.adoptOrphanedEvents()
+
     logger.info('clearing sync cursors for a full resync')
     state.clearTodoistSyncToken(db)
     for (const calendarId of this.ctx.routing.calendarIds) {
@@ -96,6 +104,47 @@ export class SyncEngine {
 
     await this.reconcile()
     logger.info('full resync finished')
+  }
+
+  /**
+   * Rebuild link rows for managed events that have lost theirs.
+   *
+   * Every event this app creates carries its `todoistId`, so the pairing is
+   * recoverable from Google alone — the database is a cache. Only missing links
+   * are created; existing ones are left alone, which is what keeps repeated
+   * resyncs write-free.
+   */
+  private async adoptOrphanedEvents(): Promise<void> {
+    const { db, google, routing } = this.ctx
+    let adopted = 0
+
+    for (const calendarId of routing.calendarIds) {
+      const projectId = routing.projectForCalendar(calendarId)
+      if (projectId === undefined) continue
+
+      for (const event of await google.listManagedEvents(calendarId)) {
+        const todoistId = todoistIdOf(event)
+        if (todoistId === undefined || event.id == null) continue
+        if (links.findByTodoistItemId(db, todoistId) !== undefined) continue
+
+        this.ctx.persistLink({
+          todoistItemId: todoistId,
+          googleEventId: event.id,
+          googleCalendarId: calendarId,
+          todoistProjectId: projectId,
+          // Blank so the task is re-pushed once, bringing the event back in
+          // line with whatever changed while the link was missing. The real
+          // fingerprint is stored on that push, so later resyncs are quiet.
+          todoistFingerprint: '',
+          googleFingerprint: googleFingerprint(event, calendarId),
+        })
+        adopted++
+      }
+    }
+
+    if (adopted > 0) {
+      logger.info({ adopted }, 'adopted managed events with no link row')
+    }
   }
 
   /** Fire-and-forget variant, for the admin endpoint. */

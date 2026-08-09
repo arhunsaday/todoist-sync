@@ -7,11 +7,16 @@ import { createApp, type AppDeps } from './server.js'
 const discover = vi.hoisted(() => vi.fn())
 vi.mock('../discovery.js', () => ({ discover }))
 
+const TOKEN = 'test-admin-token-0123456789'
+const credentials = `Basic ${Buffer.from(`admin:${TOKEN}`).toString('base64')}`
+
 let db: Db
 
+/** Unguarded, so the page assertions are about the pages themselves. */
 function app() {
   return createApp({
     db,
+    adminToken: undefined,
     getEngine: () => undefined,
     onAuthorized: async () => {},
   })
@@ -140,12 +145,64 @@ describe('/admin without ADMIN_TOKEN', () => {
   })
 })
 
+describe('basic auth', () => {
+  const guarded = () =>
+    createApp({
+      db,
+      adminToken: TOKEN,
+      getEngine: () => undefined,
+      onAuthorized: async () => {},
+    })
+
+  it.each(['/setup', '/setup/ids', '/setup/google', '/admin/resync'])(
+    'rejects %s without credentials',
+    async (path) => {
+      expect((await guarded().request(path)).status).toBe(401)
+    },
+  )
+
+  it('accepts /setup with credentials', async () => {
+    const response = await guarded().request('/setup', {
+      headers: { Authorization: credentials },
+    })
+
+    expect(response.status).toBe(200)
+  })
+
+  it('rejects a wrong password', async () => {
+    const response = await guarded().request('/setup', {
+      headers: {
+        Authorization: `Basic ${Buffer.from('admin:wrong').toString('base64')}`,
+      },
+    })
+
+    expect(response.status).toBe(401)
+  })
+
+  // The platform healthcheck and the two providers must still get through.
+  it.each(['/health'])('leaves %s open', async (path) => {
+    expect((await guarded().request(path)).status).toBe(200)
+  })
+
+  it('leaves the Todoist webhook to its own HMAC check', async () => {
+    const response = await guarded().request('/webhooks/todoist', {
+      method: 'POST',
+      headers: { 'x-todoist-hmac-sha256': 'bogus' },
+      body: '{}',
+    })
+
+    // 401 from the signature check, not from basic auth.
+    expect(await response.text()).toBe('invalid signature')
+  })
+})
+
 describe('/admin/resync', () => {
   // A GET that mutated would be fired by link scanners and browser prefetch.
   it('only confirms on GET, never acts', async () => {
     const resync = vi.fn()
     const app = createApp({
       db,
+      adminToken: TOKEN,
       getEngine: () =>
         ({ triggerResyncAll: resync }) as unknown as ReturnType<
           AppDeps['getEngine']

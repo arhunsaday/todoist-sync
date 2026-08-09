@@ -25,6 +25,12 @@ import {
 
 export interface AppDeps {
   db: Db
+  /**
+   * Guards `/setup` and `/admin` with basic auth. Passed in rather than read
+   * from config so tests can exercise both states — and so a value in a
+   * developer's `.env` cannot silently change how the app under test behaves.
+   */
+  adminToken?: string | undefined
   /** `undefined` until both providers have been authorized. */
   getEngine: () => SyncEngine | undefined
   /** Called after a successful OAuth callback so the engine can be built. */
@@ -111,7 +117,7 @@ function idTable(rows: NamedId[], heading: string): string {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono()
-  const adminToken = getConfig().ADMIN_TOKEN
+  const adminToken = deps.adminToken
 
   // Basic auth rather than a token in the query string: the browser prompts
   // once and the value never lands in history, logs, or a Referer header.

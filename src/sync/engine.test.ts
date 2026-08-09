@@ -350,7 +350,7 @@ describe('title decoration', () => {
     await engine.reconcile()
 
     expect(google.eventsOn(WORK)[0]?.summary).toBe(
-      '!P1 @5min Write the sync engine',
+      '!p1 @5min Write the sync engine',
     )
   })
 
@@ -368,7 +368,7 @@ describe('title decoration', () => {
     todoist.edit('item-1', { priority: 3 })
     await engine.reconcile()
 
-    expect(google.eventsOn(WORK)[0]?.summary).toBe('!P2 Write the sync engine')
+    expect(google.eventsOn(WORK)[0]?.summary).toBe('!p2 Write the sync engine')
   })
 
   it('re-decorates when a label is added', async () => {
@@ -413,7 +413,7 @@ describe('title decoration', () => {
 
     expect(todoist.items.get('item-1')?.content).toBe('Write the sync engine')
     expect(google.eventsOn(WORK)[0]?.summary).toBe(
-      '!P1 @5min Write the sync engine',
+      '!p1 @5min Write the sync engine',
     )
   })
 
@@ -422,10 +422,72 @@ describe('title decoration', () => {
     await engine.reconcile()
     const eventId = google.eventsOn(WORK)[0]?.id
 
-    google.userEdit(WORK, eventId!, { summary: '!P1 Renamed in Google' })
+    google.userEdit(WORK, eventId!, { summary: '!p1 Renamed in Google' })
     await engine.reconcile()
 
     expect(todoist.items.get('item-1')?.content).toBe('Renamed in Google')
+  })
+})
+
+describe('links in task titles', () => {
+  const LINKED =
+    'Prendre [rendez-vous chez le dentiste](https://www.doctolib.fr/search?around_me=true&keyword=dentiste)'
+
+  it('shows the link text, not the URL', async () => {
+    todoist.seed(task({ content: LINKED, priority: 4, labels: ['🔥urgent'] }))
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.summary).toBe(
+      '!p1 @urg Prendre rendez-vous chez le dentiste',
+    )
+  })
+
+  // The URL cannot be recovered from the rendered title, so writing it back
+  // would silently delete the link from the task's name. This is the test that
+  // matters most about rendering.
+  it('does NOT strip the URL from the task when the event is edited', async () => {
+    todoist.seed(task({ content: LINKED, priority: 4 }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, {
+      start: { dateTime: '2026-08-09T14:00:00Z' },
+      end: { dateTime: '2026-08-09T15:00:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe(LINKED)
+    // The reschedule still landed.
+    expect(todoist.items.get('item-1')?.due?.date).toBe('2026-08-09T14:00:00.000Z')
+  })
+
+  it('keeps the URL safe across many calendar-side edits', async () => {
+    todoist.seed(task({ content: LINKED }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    for (let hour = 10; hour < 15; hour++) {
+      google.userEdit(WORK, eventId!, {
+        start: { dateTime: `2026-08-09T${hour}:00:00Z` },
+        end: { dateTime: `2026-08-09T${hour + 1}:00:00Z` },
+      })
+      await engine.reconcile()
+    }
+
+    expect(todoist.items.get('item-1')?.content).toBe(LINKED)
+  })
+
+  // Renaming is the user overwriting the title themselves, so the link is
+  // theirs to lose — but the rename must still be applied.
+  it('accepts a genuine rename, which does discard the link', async () => {
+    todoist.seed(task({ content: LINKED }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, { summary: 'Dentiste jeudi' })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe('Dentiste jeudi')
   })
 })
 
@@ -567,6 +629,20 @@ describe('full resync', () => {
 
     expect(writeCount()).toBe(after)
     expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+
+  // A wiped volume leaves the events in place but nothing pointing at them.
+  // Without re-linking first, a resync would create a second event per task.
+  it('adopts existing events instead of duplicating them after a wipe', async () => {
+    todoist.seed(task())
+    await engine.resyncAll()
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+
+    links.removeAll(db)
+    await engine.resyncAll()
+
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+    expect(links.findByTodoistItemId(db, 'item-1')).toBeDefined()
   })
 
   it('resyncs every mapped calendar, not just the first', async () => {

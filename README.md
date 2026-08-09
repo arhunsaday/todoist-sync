@@ -48,16 +48,21 @@ dragging it to another mapped calendar moves the task to that project;
 
 ### Derived title text and comments
 
-Event titles get prefixes derived from the task, and comments are appended to
-the description:
+A task called
+`Prendre [rendez-vous chez le dentiste](https://www.doctolib.fr/search?around_me=true&keyword=dentiste)`
+with priority p1 and an `🔥urgent` label becomes:
 
 ```
-!P1 @5min Renew the passport
+!p1 @urg Prendre rendez-vous chez le dentiste
 ─────── Todoist comments ───────
 2026-08-09 · booked an appointment for Thursday
 ```
 
-- `!P1` / `!P2` / `!P3` from Todoist priority (`PRIORITY_PREFIXES`). Note
+- **Links are flattened to their text.** Both of Todoist's formats —
+  markdown `[text](url)` and its own `url (text)` — so a long URL does not
+  swamp the title. A bare URL with no text is left alone, since removing it
+  would leave nothing.
+- `!p1` / `!p2` / `!p3` from Todoist priority (`PRIORITY_PREFIXES`). Note
   Todoist's scale is inverted internally — p1 is `priority: 4`.
 - `@5min` / `@30min` / `@urg` from labels (`LABEL_PREFIXES`, `match:prefix`
   pairs). The match ignores emoji, spaces, and punctuation, so `⚡ 5min` and
@@ -74,14 +79,31 @@ looks correct. The first time the event is edited in Google, the decorated
 summary lands in the task's content — and the next push decorates the already
 decorated text, compounding on every edit after that.
 
-The defence is that **stripping is idempotent and only removes tokens this app
-emits** (`src/sync/decorate.ts`). An `@something` you typed yourself survives;
-a doubled prefix gets cleaned up rather than entrenched. Turning
-`PRIORITY_PREFIXES` off still strips existing `!P` markers, so disabling the
-feature tidies your titles instead of freezing them.
+Two different defences are needed, because the transforms differ in kind.
 
-Comments get the same treatment: everything from the marker line onward is
-discarded on the way back, after normalising whatever HTML Google returns.
+**Prefixes and comments are reversible.** Stripping is idempotent and only
+removes tokens this app emits (`src/sync/decorate.ts`), so `@something` you
+typed yourself survives and a doubled prefix gets cleaned up rather than
+entrenched. Comments work the same way: everything from the marker line onward
+is discarded on the way back, after normalising whatever HTML Google returns.
+Turning `PRIORITY_PREFIXES` off still strips existing `!p1` markers — and the
+old uppercase `!P1` — so disabling the feature tidies your titles instead of
+freezing them.
+
+**Link flattening is not reversible.** The URL cannot be recovered from
+`Prendre rendez-vous chez le dentiste`, so no amount of stripping helps. Instead
+every event stores a hash of the title we wrote
+(`extendedProperties.private.titleHash`, excluded from the fingerprint). On the
+way back:
+
+- title still hashes to what we wrote → the user did not rename it, so the
+  update **omits `content` entirely** and the task keeps its markdown link;
+- title differs → a genuine rename, so take what they typed. The link is lost,
+  but they overwrote it themselves.
+
+An event with no stored hash — written by an older version — is treated as
+unchanged. Missing a rename is recoverable; deleting a URL out of a task's name
+is not.
 
 Events created directly on a mapped calendar become tasks in the paired
 project, and are then tagged so they are managed from that point on. Skipped:
@@ -130,6 +152,28 @@ Both discard the Todoist cursor and every Google cursor, then reconcile. Safe
 to repeat: links are left intact, so anything already mirrored matches its
 stored fingerprint and is skipped. Only genuinely missing or drifted events
 produce writes — a resync of an already-consistent setup performs **zero**.
+
+### What this app can and cannot destroy
+
+**It cannot delete a Todoist task.** Not a policy — a capability limit. The only
+commands it ever sends are `item_add`, `item_update`, `item_move`,
+`item_complete`, and `item_uncomplete`; there is no `item_delete` anywhere in
+the codebase. The OAuth scope is `data:read_write`, and Todoist requires the
+separate `data:delete` scope to delete a task, which is deliberately not
+requested. Even a comprehensively broken build could not delete your tasks.
+
+**It cannot delete a Google calendar.** It calls `events.*` only — never
+`calendars.delete` or `calendarList.delete`.
+
+So the worst it can do to Todoist is **complete** tasks, which Todoist keeps and
+lets you un-complete.
+
+| You do this | What happens |
+|---|---|
+| **Stop the service** | Nothing. Cursors persist; on restart the incremental sync resumes and catches up on everything that changed while it was down. Google's push channels lapse and are re-registered at boot. |
+| **Delete a mapped Google calendar** | `events.list` 404s, the reconcile logs an error and retries. **No tasks are touched** — a deleted calendar reports no cancellations, so nothing reads as "the user deleted these events". Remove it from `SYNC_MAPPINGS` to stop the errors. |
+| **Wipe the database** | Not destructive, but you must re-authorize at `/setup` — the OAuth tokens live there. Startup then re-links existing events by their `todoistId` tag before syncing, so nothing is duplicated. |
+| **Delete every event in a mapped calendar** | ⚠️ The one genuinely damaging case. Each deletion is read as "task done", so those tasks get **completed** in Todoist. Recoverable (un-complete them), but disruptive. Stop the service first if you plan to clear a calendar. |
 
 ### Conflict policy
 
@@ -324,7 +368,7 @@ convergence, rather than silently accepting drift from the downtime.
 
 ```bash
 pnpm install
-pnpm test          # 179 tests, no network
+pnpm test          # 202 tests, no network
 pnpm typecheck
 pnpm dev
 ```

@@ -7,8 +7,10 @@ import {
   notesDigest,
   prefixesFor,
   renderDescription,
+  renderTitleText,
   stripCommentsBlock,
   stripSummaryDecoration,
+  titleHash,
   type DecorationOptions,
 } from './decorate.js'
 
@@ -25,9 +27,9 @@ const item = (priority = 1, labels: string[] = []) => ({ priority, labels })
 
 describe('prefixesFor', () => {
   it('maps Todoist priority to !P labels, remembering the scale is inverted', () => {
-    expect(prefixesFor(item(4), options)).toEqual(['!P1'])
-    expect(prefixesFor(item(3), options)).toEqual(['!P2'])
-    expect(prefixesFor(item(2), options)).toEqual(['!P3'])
+    expect(prefixesFor(item(4), options)).toEqual(['!p1'])
+    expect(prefixesFor(item(3), options)).toEqual(['!p2'])
+    expect(prefixesFor(item(2), options)).toEqual(['!p3'])
     // p4 is Todoist's "no priority" default and deserves no marker.
     expect(prefixesFor(item(1), options)).toEqual([])
   })
@@ -66,7 +68,7 @@ describe('prefixesFor', () => {
     const a = prefixesFor(item(4, ['urgent', '5min']), options)
     const b = prefixesFor(item(4, ['5min', 'urgent']), options)
 
-    expect(a).toEqual(['!P1', '@5min', '@urg'])
+    expect(a).toEqual(['!p1', '@5min', '@urg'])
     expect(b).toEqual(a)
   })
 
@@ -82,12 +84,69 @@ describe('summary decoration', () => {
 
   it('prepends priority and label prefixes', () => {
     expect(decorateSummary('Buy milk', item(4, ['⚡5min']), options)).toBe(
-      '!P1 @5min Buy milk',
+      '!p1 @5min Buy milk',
     )
   })
 })
 
+describe('renderTitleText', () => {
+  it('flattens a markdown link to its text', () => {
+    expect(
+      renderTitleText(
+        'Prendre [rendez-vous chez le dentiste](https://www.doctolib.fr/search?around_me=true&keyword=dentiste)',
+      ),
+    ).toBe('Prendre rendez-vous chez le dentiste')
+  })
+
+  it('handles a url containing brackets and parentheses', () => {
+    expect(
+      renderTitleText('See [the docs](https://example.com/a_(b)/c?x=1&y=2)'),
+    ).toBe('See the docs')
+  })
+
+  it('flattens several links in one title', () => {
+    expect(
+      renderTitleText('[a](https://a.com) and [b](https://b.com)'),
+    ).toBe('a and b')
+  })
+
+  it("flattens Todoist's own url (text) format", () => {
+    expect(renderTitleText('https://doctolib.fr (dentiste)')).toBe('dentiste')
+  })
+
+  it('leaves a plain title untouched', () => {
+    expect(renderTitleText('Buy milk')).toBe('Buy milk')
+  })
+
+  // Removing it would leave nothing at all, which is worse than a long title.
+  it('leaves a bare url alone', () => {
+    expect(renderTitleText('https://example.com/thing')).toBe(
+      'https://example.com/thing',
+    )
+  })
+
+  it('tidies the whitespace a removal leaves behind', () => {
+    expect(renderTitleText('Call [Bob](https://x.com)  now')).toBe('Call Bob now')
+  })
+})
+
+describe('titleHash', () => {
+  it('matches for the same title and differs for a changed one', () => {
+    expect(titleHash('!p1 Buy milk')).toBe(titleHash('!p1 Buy milk'))
+    expect(titleHash('!p1 Buy milk')).not.toBe(titleHash('!p1 Buy bread'))
+  })
+
+  it('ignores surrounding whitespace, which Google may trim', () => {
+    expect(titleHash('  !p1 Buy milk  ')).toBe(titleHash('!p1 Buy milk'))
+  })
+})
+
 describe('stripSummaryDecoration', () => {
+  // Titles written by an earlier version used uppercase !P1.
+  it('strips the old uppercase priority tokens too', () => {
+    expect(stripSummaryDecoration('!P1 @5min Buy milk', options)).toBe('Buy milk')
+  })
+
   // The property the whole design rests on.
   it('is the exact inverse of decoration', () => {
     for (const priority of [1, 2, 3, 4]) {
@@ -100,9 +159,9 @@ describe('stripSummaryDecoration', () => {
 
   // Idempotence is what stops prefixes compounding on every calendar edit.
   it('is idempotent, and cleans up an already-doubled title', () => {
-    const once = stripSummaryDecoration('!P1 @5min Buy milk', options)
+    const once = stripSummaryDecoration('!p1 @5min Buy milk', options)
     expect(stripSummaryDecoration(once, options)).toBe(once)
-    expect(stripSummaryDecoration('!P1 @5min !P1 @5min Buy milk', options)).toBe(
+    expect(stripSummaryDecoration('!p1 @5min !p1 @5min Buy milk', options)).toBe(
       'Buy milk',
     )
   })
@@ -124,11 +183,11 @@ describe('stripSummaryDecoration', () => {
   // Turning the feature off should clean existing titles, not entrench them.
   it('still strips priority tokens when emitting them is disabled', () => {
     const off = { ...options, priorityPrefixes: false }
-    expect(stripSummaryDecoration('!P1 Buy milk', off)).toBe('Buy milk')
+    expect(stripSummaryDecoration('!p1 Buy milk', off)).toBe('Buy milk')
   })
 
   it('keeps the original when a title is nothing but prefixes', () => {
-    expect(stripSummaryDecoration('!P1 @5min', options)).toBe('!P1 @5min')
+    expect(stripSummaryDecoration('!p1 @5min', options)).toBe('!p1 @5min')
   })
 })
 

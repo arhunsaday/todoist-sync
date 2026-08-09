@@ -214,6 +214,13 @@ export class FakeGoogle {
     return 'Europe/Paris'
   }
 
+  /** Events this app owns, found by the constant `managedBy` marker. */
+  async listManagedEvents(calendarId: string): Promise<GoogleEvent[]> {
+    return this.eventsOn(calendarId).filter(
+      (event) => event.extendedProperties?.private?.['managedBy'] === 't2gc',
+    )
+  }
+
   async listChanges(
     calendarId: string,
     syncToken: string | undefined,

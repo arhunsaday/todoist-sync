@@ -4,6 +4,7 @@ import type { StoredNote } from '../db/items.js'
 import {
   MANAGED_BY_KEY,
   MANAGED_BY_VALUE,
+  TITLE_HASH_KEY,
   TODOIST_ID_KEY,
   type GoogleEvent,
 } from '../google/client.js'
@@ -12,8 +13,10 @@ import {
   decorateSummary,
   normaliseGoogleText,
   renderDescription,
+  renderTitleText,
   stripCommentsBlock,
   stripSummaryDecoration,
+  titleHash,
   type DecorationOptions,
 } from './decorate.js'
 import {
@@ -50,7 +53,17 @@ export interface GoogleEventFields {
 }
 
 export interface TodoistFields {
+  /** Best available content, used when creating a task from a foreign event. */
   content: string
+  /**
+   * True when the event's title still matches what we last wrote, so an update
+   * must leave the task's content alone.
+   *
+   * Titles are rendered lossily — a markdown link becomes just its text — so
+   * writing a rendered title back would silently delete the URL from the task.
+   * `content` is only safe to apply to an existing task when this is false.
+   */
+  contentUnchanged: boolean
   description: string
   due: { date: string; timezone?: string | null } | null
   duration: TodoistDuration | null
@@ -80,11 +93,13 @@ export function toGoogleEvent(
   if (item.due == null) return null
 
   const { date, timezone } = item.due
-  const content = item.content.trim() === '' ? UNTITLED : item.content
+  const rendered = renderTitleText(item.content)
+  const content = rendered === '' ? UNTITLED : rendered
   const description = item.description ?? ''
+  const summary = decorateSummary(content, item, options)
 
   const common = {
-    summary: decorateSummary(content, item, options),
+    summary,
     description: options.syncComments
       ? renderDescription(description, notes)
       : description,
@@ -92,6 +107,9 @@ export function toGoogleEvent(
       private: {
         [TODOIST_ID_KEY]: item.id,
         [MANAGED_BY_KEY]: MANAGED_BY_VALUE,
+        // Lets the reverse path recognise its own rendering. Excluded from the
+        // fingerprint, so writing it never looks like a change.
+        [TITLE_HASH_KEY]: titleHash(summary),
       },
     },
     source: { title: 'Todoist', url: todoistTaskUrl(item.id) },
@@ -158,8 +176,17 @@ export function toTodoistFields(
   const rawSummary = event.summary?.trim() ?? ''
   const summary = stripSummaryDecoration(rawSummary, options).trim()
 
+  const storedHash = event.extendedProperties?.private?.[TITLE_HASH_KEY]
+
+  // No stored hash means an event from before titles were rendered, or one we
+  // have never written. Treat it as unchanged: failing to pick up a rename is
+  // recoverable, deleting a URL out of a task's name is not.
+  const contentUnchanged =
+    storedHash === undefined || storedHash === titleHash(rawSummary)
+
   const common = {
     content: summary === '' ? UNTITLED : summary,
+    contentUnchanged,
     description: stripCommentsBlock(
       normaliseGoogleText(event.description ?? ''),
     ),

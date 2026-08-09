@@ -12,6 +12,15 @@ export type GoogleEvent = calendar_v3.Schema$Event
 export const MANAGED_BY_KEY = 'managedBy'
 export const MANAGED_BY_VALUE = 't2gc'
 export const TODOIST_ID_KEY = 'todoistId'
+/**
+ * Hash of the title we last wrote.
+ *
+ * Titles are rendered lossily — markdown links are flattened to their text —
+ * so the transform cannot be inverted. This lets the reverse path tell "the
+ * user renamed this" from "this is still our own rendering", and leave the
+ * task's content untouched in the latter case.
+ */
+export const TITLE_HASH_KEY = 'titleHash'
 
 /**
  * These must be byte-identical between the initial list and every incremental

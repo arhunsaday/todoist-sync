@@ -3,10 +3,12 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
-    // Set before any test imports config.ts. dotenv does not override values
-    // already present in process.env, so a real .env cannot leak in here.
+    // Set before any test imports config.ts. dotenv will not override a key
+    // listed here — but any key NOT listed still leaks in from a developer's
+    // real .env, so anything that changes behaviour must be pinned.
     env: {
       LOG_LEVEL: 'silent',
+      ADMIN_TOKEN: 'test-admin-token-0123456789',
       DATABASE_PATH: ':memory:',
       PUBLIC_URL: 'https://sync.test',
       GOOGLE_CLIENT_ID: 'test-google-client',

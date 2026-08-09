@@ -51,9 +51,12 @@ async function activate(): Promise<void> {
   await refreshWatchChannels()
   logger.info(
     { calendars: config.SYNC_MAPPINGS.length },
-    'sync active; running initial reconcile',
+    'sync active; running initial resync',
   )
-  engine.trigger('startup')
+  // resyncAll rather than a plain reconcile: it re-links managed events from
+  // their tags first, so booting against a lost volume adopts the existing
+  // events instead of creating a duplicate for every task.
+  engine.triggerResyncAll('startup')
 }
 
 async function refreshWatchChannels(): Promise<void> {
@@ -70,6 +73,7 @@ async function refreshWatchChannels(): Promise<void> {
 
 const app = createApp({
   db,
+  adminToken: config.ADMIN_TOKEN,
   getEngine: () => engine,
   onAuthorized: activate,
 })
