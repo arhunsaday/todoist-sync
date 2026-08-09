@@ -111,11 +111,12 @@ export async function ensureWatchChannels(
         ?.reason
 
       if (reason === 'pushNotificationsNotAllowed') {
+        // Domain verification is no longer required, so this is almost always
+        // the certificate: it must come from a trusted CA and match the host.
         logger.error(
           { calendarId: googleCalendarId, address: webhookAddress() },
-          'Google rejected the webhook URL. The receiving domain must be HTTPS ' +
-            'with a valid certificate and verified in Search Console, then added ' +
-            'to the Cloud project as an authorized domain. Falling back to polling.',
+          'Google rejected the webhook URL. It must be HTTPS with a valid, ' +
+            'CA-signed certificate matching the hostname. Falling back to polling.',
         )
       } else {
         logger.error(

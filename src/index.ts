@@ -26,10 +26,21 @@ const timers: NodeJS.Timeout[] = []
  */
 async function activate(): Promise<void> {
   if (engine !== undefined) return
+
+  const setupUrl = new URL('/setup', config.PUBLIC_URL).toString()
+
   if (!isAuthorized(db)) {
+    logger.warn({ setup: setupUrl }, 'not authorized yet; visit the setup page')
+    return
+  }
+
+  // Authorized but unmapped: the sync would run and touch nothing, which looks
+  // identical to being broken. Say so instead.
+  if (config.SYNC_MAPPINGS.length === 0) {
     logger.warn(
-      { setup: new URL('/setup', config.PUBLIC_URL).toString() },
-      'not authorized yet; visit the setup page',
+      { ids: new URL('/setup/ids', config.PUBLIC_URL).toString() },
+      'SYNC_MAPPINGS is empty; nothing will sync. Build it from the ids page, ' +
+        'set the variable, and redeploy.',
     )
     return
   }

@@ -40,8 +40,11 @@ describe('SYNC_MAPPINGS parsing', () => {
     )
   })
 
-  it('rejects an empty mapping list', () => {
-    expect(() => mappingsSchema.parse('')).toThrow()
+  // Empty must parse, not throw: the server has to boot unconfigured so you
+  // can authorize Google, which is what makes the calendar ids discoverable.
+  it('accepts an empty mapping list', () => {
+    expect(mappingsSchema.parse('')).toEqual([])
+    expect(mappingsSchema.parse(undefined)).toEqual([])
   })
 
   // Both of these would make the direction of a change ambiguous at runtime.

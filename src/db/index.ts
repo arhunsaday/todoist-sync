@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 
 import Database from 'better-sqlite3'
 
@@ -11,12 +11,45 @@ export type Db = Database.Database
 
 let instance: Db | undefined
 
+/**
+ * A permission error here is nearly always a misconfigured volume, and the
+ * raw EACCES stack sends you looking at the code instead. Two causes account
+ * for almost all of them, so name both.
+ */
+function describeOpenFailure(path: string, error: unknown): string {
+  const directory = dirname(resolve(path))
+  const relative = !isAbsolute(path)
+
+  return [
+    `Cannot open the database at ${path} (resolved to ${directory}).`,
+    relative
+      ? '\nDATABASE_PATH is RELATIVE, so it resolves inside the app directory ' +
+        'rather than your mounted volume — the data would not survive a ' +
+        'redeploy even if this succeeded. Set it to an absolute path under the ' +
+        'mount, e.g. DATABASE_PATH=/data/sync.db.'
+      : '\nThe directory is not writable by this process. If the mount is ' +
+        'owned by root and the container runs as a non-root user, grant access ' +
+        '— on Railway that means setting RAILWAY_RUN_UID=0 on the service.',
+    `\nUnderlying error: ${(error as Error).message}`,
+  ].join('')
+}
+
 function open(path: string): Db {
   if (path !== ':memory:') {
-    mkdirSync(dirname(path), { recursive: true })
+    try {
+      mkdirSync(dirname(path), { recursive: true })
+    } catch (error) {
+      throw new Error(describeOpenFailure(path, error))
+    }
   }
 
-  const db = new Database(path)
+  let db: Db
+  try {
+    db = new Database(path)
+  } catch (error) {
+    throw new Error(describeOpenFailure(path, error))
+  }
+
   // WAL keeps the reconcile loop's writes from blocking webhook handlers.
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')

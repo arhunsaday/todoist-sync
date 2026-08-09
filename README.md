@@ -82,30 +82,77 @@ Create an app in the [App Management console](https://app.todoist.com/app/settin
 Webhooks only fire for **OAuth-authorized apps**. A personal API token will not
 trigger them, no matter how it is configured.
 
+The webhook signature is an HMAC of the raw body under the **client secret**.
+The "Verification Token" shown in the console is not used here.
+
 ### 2. Google Cloud project
 
-Enable the Calendar API, create an OAuth client (Web application) with redirect
-URI `https://<your-domain>/setup/google/callback`, and **publish the consent
-screen to "In production"**. In "Testing" status, refresh tokens expire after
-7 days and the sync dies silently every week.
+The consent screen now lives under **Google Auth Platform**, not the old
+"OAuth consent screen" menu item.
 
-Your work account may block creating OAuth clients — a personal Google Cloud
-project is the path of least resistance.
+1. Enable the [Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+2. **Google Auth Platform → Get started**: app name, support email,
+   **Audience: External**, contact email.
+3. **Data Access → Add or remove scopes**: add
+   `https://www.googleapis.com/auth/calendar`. It is marked sensitive; that is
+   expected.
+4. **Audience → Publish app.** In *Testing* status, refresh tokens expire after
+   7 days and the sync dies silently every week. Publishing unverified is fine
+   for a single user — you get an "unverified app" interstitial at consent
+   (Advanced → Go to…), but refresh tokens stop expiring. Verification only
+   matters past 100 users.
+5. **Clients → Create client**, type **Web application**:
+   - Authorized redirect URI: `https://<your-domain>/setup/google/callback`
+   - Authorized JavaScript origins: **leave empty** — that field is for
+     browser-side flows, and this is a server-side code exchange.
 
-### 3. Configure and authorize
+`GOOGLE_REDIRECT_URI` must be byte-identical to the console entry; Google
+compares it as an exact string. A work account may block creating OAuth
+clients, in which case use a personal Cloud project.
+
+### 3. Deploy, then authorize, then map
+
+**`SYNC_MAPPINGS` is deliberately optional at boot**, because the setup would
+otherwise deadlock: you need the running server to authorize Google, and you
+need Google authorized before the calendar ids are discoverable.
 
 ```bash
-cp .env.example .env
+cp .env.example .env   # credentials only; leave SYNC_MAPPINGS empty for now
 ```
 
-Fill in the credentials, then resolve the ids:
+Deploy, then:
 
-```bash
-pnpm list-ids
+1. Visit **`/setup`** and authorize both providers.
+2. Visit **`/setup/ids`**. It lists every Todoist project and writable Google
+   calendar, with a picker that assembles the `SYNC_MAPPINGS` line for you —
+   worth using rather than copying `c_1a2b…@group.calendar.google.com` by eye.
+3. Set `SYNC_MAPPINGS` in your environment and redeploy.
+
+`/setup` shows all three steps and which are done. Until all three are, the
+app boots, serves the setup pages, and syncs nothing — `/health` reports
+`awaiting-setup` and returns `200` so the platform does not restart-loop it.
+
+`pnpm list-ids` prints the same lists from a terminal, but only works where the
+OAuth tokens are — on a hosted deploy that is the server, so use `/setup/ids`.
+
+Both ids are also readable from the two UIs, if you would rather not wait for
+the deploy:
+
+- **Google calendar id** — Calendar → Settings → pick the calendar under
+  "Settings for my calendars" → **Integrate calendar** → *Calendar ID*. Your
+  own calendar is your email address; the rest look like
+  `c_1a2b…@group.calendar.google.com`.
+- **Todoist project id** — open the project on the web; the id is the trailing
+  segment of the URL, `app.todoist.com/app/project/<slug>-<id>`, e.g.
+  `6Jf837c4fJQw5Hg8`. In API v1 this is the same id the API uses, but
+  `/setup/ids` is worth a glance to confirm.
+
+Each entry needs **both** halves separated by a colon. A bare project id is
+rejected at boot with `expected "todoistProjectId:googleCalendarId"`:
+
 ```
-
-Put the four pairs into `SYNC_MAPPINGS`, deploy, and visit `/setup` to
-authorize both providers.
+SYNC_MAPPINGS=6Jf837c4fJQw5Hg8:c_1a2b@group.calendar.google.com,6Jf837qfR3px2795:me@gmail.com
+```
 
 ### 4. Dry run before the first live sync
 
@@ -115,6 +162,8 @@ pnpm reconcile:once --dry-run
 
 Logs every intended write without performing one, and persists no state. This
 is the cheapest way to catch a wrong mapping before it creates 400 events.
+Needs local tokens, so run it after authorizing locally, or accept that the
+first hosted reconcile is the live one.
 
 ## Deployment
 
@@ -122,23 +171,47 @@ Any host works. Requirements:
 
 - **HTTPS with a valid CA certificate** — Google refuses to deliver push
   notifications to anything else.
-- **A persistent volume** mounted at the `DATABASE_PATH` directory.
+- **Persistent storage** mounted at the `DATABASE_PATH` directory (`/data` in
+  the image).
 - `PUBLIC_URL` set to the public origin.
 
 ```bash
 docker build -t t2gc . && docker run -p 3000:3000 -v t2gc-data:/data --env-file .env t2gc
 ```
 
-### Google may require a verified domain
+### Railway
 
-If `events.watch` fails with `pushNotificationsNotAllowed`, the receiving
-domain must be verified in Search Console and added to the Cloud project's
-authorized domains. **A `*.up.railway.app` subdomain cannot be verified**,
-because you do not own it — use a custom domain.
+`railway.toml` covers the build and deploy settings. Two things it cannot
+express, both required:
 
-This is not fatal. Channel registration failures are logged and the app falls
-back to polling on `RECONCILE_INTERVAL_MINUTES`; you lose push latency, not
-correctness.
+1. **Attach a volume** — Service → Settings → Volumes, mount path `/data`.
+   Without it the link table is wiped on every redeploy and the next sync
+   duplicates every event. (`pnpm rebuild-links` recovers, but avoid needing
+   it.) The Dockerfile deliberately has no `VOLUME` instruction; Railway
+   rejects builds that use one.
+2. **Set `RAILWAY_RUN_UID=0`** — the image runs as the non-root `node` user
+   and Railway mounts volumes as root, so every write to `/data` fails
+   otherwise. This is Railway's own documented workaround.
+
+Then set `PUBLIC_URL` to `https://<name>.up.railway.app` and register that
+origin's `/setup/google/callback` and `/setup/todoist/callback` with Google
+and Todoist. Railway injects `PORT` itself.
+
+### Webhook URL requirements
+
+HTTPS with a certificate from a trusted CA, matching the hostname. Self-signed,
+revoked, or mismatched certificates are all rejected silently — Google simply
+stops delivering.
+
+Domain verification is **not** required. Google [removed that
+requirement](https://support.google.com/googleapi/answer/7072069): *"Domain
+verification in the API Console is no longer required to make push
+notifications work with your domains."* A platform-issued subdomain such as
+`*.up.railway.app` works without a custom domain.
+
+If `events.watch` fails anyway, it is not fatal. Registration failures are
+logged and the app falls back to polling on `RECONCILE_INTERVAL_MINUTES` — you
+lose push latency, not correctness.
 
 ## Recovery
 

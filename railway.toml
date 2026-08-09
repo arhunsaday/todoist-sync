@@ -1,0 +1,34 @@
+# Railway config-as-code. Covers the build and deploy sections only —
+# volumes are not expressible here and must be attached in the dashboard
+# (Service → Settings → Volumes), mounted at /data to match DATABASE_PATH.
+#
+# Also set on the service:
+#   DATABASE_PATH=/data/sync.db
+#                       absolute, inside the volume. Do NOT copy the relative
+#                       default out of .env — it resolves to /app/data, which
+#                       is not writable and is wiped on every redeploy.
+#   RAILWAY_RUN_UID=0   the image runs as `node`, and Railway mounts volumes
+#                       as root, so without this every write to /data fails
+#   PUBLIC_URL          the service's public origin, e.g.
+#                       https://<name>.up.railway.app (must match the OAuth
+#                       redirect URIs registered with Google and Todoist)
+#
+# Railway injects PORT itself; the app reads it.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# /health returns 200 even before authorization, reporting
+# "awaiting-authorization" — so a fresh deploy passes its healthcheck and you
+# can reach /setup to complete the OAuth flow.
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+# The process clears its timers and closes the HTTP server on SIGTERM, with a
+# 10s hard-exit backstop. Give it room to finish an in-flight reconcile.
+drainingSeconds = 20

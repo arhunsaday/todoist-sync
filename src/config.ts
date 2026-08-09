@@ -25,7 +25,10 @@ export type Mapping = z.infer<typeof mappingSchema>
  */
 export const mappingsSchema = z
   .string()
-  .min(1)
+  // Empty is allowed so the app can boot unconfigured. You need the running
+  // server to authorize Google, and you need Google authorized to discover
+  // the calendar ids — requiring the mapping up front deadlocks the setup.
+  .default('')
   .transform((raw, ctx) => {
     const mappings: Mapping[] = []
 
@@ -53,7 +56,6 @@ export const mappingsSchema = z
   .pipe(
     z
       .array(mappingSchema)
-      .min(1)
       .superRefine((mappings, ctx) => {
         // A project mapped twice, or a calendar targeted twice, makes the
         // direction of a change ambiguous. Reject it at boot rather than
