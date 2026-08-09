@@ -41,6 +41,8 @@ function task(overrides: Partial<TodoistItem> = {}): TodoistItem {
     description: '',
     due: { date: '2026-08-09', is_recurring: false },
     duration: null,
+    priority: 1,
+    labels: [],
     checked: false,
     is_deleted: false,
     ...overrides,
@@ -339,6 +341,187 @@ describe('loop prevention', () => {
     const settled = writeCount()
     await engine.reconcile()
     expect(writeCount()).toBe(settled)
+  })
+})
+
+describe('title decoration', () => {
+  it('prepends the priority and label prefixes', async () => {
+    todoist.seed(task({ priority: 4, labels: ['⚡5min'] }))
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.summary).toBe(
+      '!P1 @5min Write the sync engine',
+    )
+  })
+
+  it('leaves the Todoist content itself untouched', async () => {
+    todoist.seed(task({ priority: 4, labels: ['⚡5min'] }))
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe('Write the sync engine')
+  })
+
+  it('re-decorates when the priority changes', async () => {
+    todoist.seed(task({ priority: 4 }))
+    await engine.reconcile()
+
+    todoist.edit('item-1', { priority: 3 })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.summary).toBe('!P2 Write the sync engine')
+  })
+
+  it('re-decorates when a label is added', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { labels: ['🔥urgent'] })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.summary).toBe('@urg Write the sync engine')
+  })
+
+  // The whole point of the strip step. A calendar-side edit maps the decorated
+  // summary back to the task, and without stripping the prefixes accumulate on
+  // every subsequent edit.
+  it('does NOT write prefixes back into the task when the event is edited', async () => {
+    todoist.seed(task({ priority: 4, labels: ['⚡5min'] }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, {
+      start: { dateTime: '2026-08-09T14:00:00Z' },
+      end: { dateTime: '2026-08-09T15:00:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe('Write the sync engine')
+  })
+
+  it('never accumulates prefixes across many calendar-side edits', async () => {
+    todoist.seed(task({ priority: 4, labels: ['⚡5min'] }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    for (let hour = 10; hour < 16; hour++) {
+      google.userEdit(WORK, eventId!, {
+        start: { dateTime: `2026-08-09T${hour}:00:00Z` },
+        end: { dateTime: `2026-08-09T${hour + 1}:00:00Z` },
+      })
+      await engine.reconcile()
+    }
+
+    expect(todoist.items.get('item-1')?.content).toBe('Write the sync engine')
+    expect(google.eventsOn(WORK)[0]?.summary).toBe(
+      '!P1 @5min Write the sync engine',
+    )
+  })
+
+  it('takes a genuine rename, minus the prefixes the user left in place', async () => {
+    todoist.seed(task({ priority: 4 }))
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, { summary: '!P1 Renamed in Google' })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe('Renamed in Google')
+  })
+})
+
+describe('comments', () => {
+  it('appends comments to the event description', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.addComment('item-1', 'first thought')
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.description).toContain('first thought')
+  })
+
+  // A comment does not change its task, so this only works if the engine maps
+  // the note back to its item id itself.
+  it('updates the event even though the task itself did not change', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const before = google.writes.length
+
+    todoist.addComment('item-1', 'first thought')
+    await engine.reconcile()
+
+    expect(google.writes.length).toBeGreaterThan(before)
+  })
+
+  it('reflects a deleted comment', async () => {
+    todoist.seed(task())
+    const noteId = todoist.addComment('item-1', 'first thought')
+    await engine.reconcile()
+
+    todoist.deleteComment(noteId)
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.description).not.toContain('first thought')
+  })
+
+  it('does NOT write the comments block back into the task description', async () => {
+    todoist.seed(task({ description: 'my own notes' }))
+    todoist.addComment('item-1', 'a comment')
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, {
+      start: { dateTime: '2026-08-09T14:00:00Z' },
+      end: { dateTime: '2026-08-09T15:00:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.description).toBe('my own notes')
+  })
+
+  it('settles after a comment propagates', async () => {
+    todoist.seed(task())
+    todoist.addComment('item-1', 'a comment')
+    await engine.reconcile()
+    await engine.reconcile()
+
+    const settled = writeCount()
+    await engine.reconcile()
+    expect(writeCount()).toBe(settled)
+  })
+})
+
+// The failure seen in production: Google deep-merges nested objects on patch,
+// so a stale all-day `date` survived alongside the new `dateTime` and the
+// request came back 400 "Invalid start time."
+describe('switching between all-day and timed', () => {
+  it('converts an all-day event to a timed one', async () => {
+    todoist.seed(task({ due: { date: '2026-08-10', is_recurring: false } }))
+    await engine.reconcile()
+    expect(google.eventsOn(WORK)[0]?.start?.date).toBe('2026-08-10')
+
+    todoist.edit('item-1', {
+      due: { date: '2026-08-10T15:00:00', is_recurring: false },
+    })
+    await engine.reconcile()
+
+    const event = google.eventsOn(WORK)[0]
+    expect(event?.start?.dateTime).toBe('2026-08-10T15:00:00')
+    expect(event?.start?.date).toBeUndefined()
+  })
+
+  it('converts a timed event back to all-day', async () => {
+    todoist.seed(
+      task({ due: { date: '2026-08-10T15:00:00', is_recurring: false } }),
+    )
+    await engine.reconcile()
+
+    todoist.edit('item-1', { due: { date: '2026-08-10', is_recurring: false } })
+    await engine.reconcile()
+
+    const event = google.eventsOn(WORK)[0]
+    expect(event?.start?.date).toBe('2026-08-10')
+    expect(event?.start?.dateTime).toBeUndefined()
   })
 })
 

@@ -12,14 +12,17 @@ import type {
   SyncResponse,
   TodoistCommand,
   TodoistItem,
+  TodoistNote,
 } from '../todoist/types.js'
 
 export class FakeTodoist {
   readonly items = new Map<string, TodoistItem>()
+  readonly notes = new Map<string, TodoistNote>()
   /** Every mutating call, for asserting that a quiet reconcile stays quiet. */
   readonly writes: TodoistCommand[] = []
 
   private pending = new Set<string>()
+  private pendingNotes = new Set<string>()
   private seq = 0
 
   seed(item: TodoistItem): void {
@@ -35,17 +38,48 @@ export class FakeTodoist {
     this.pending.add(id)
   }
 
+  /**
+   * Post a comment. Crucially this does NOT mark the task as changed — that is
+   * exactly how Todoist behaves, and the reason the engine has to map notes
+   * back to their task itself.
+   */
+  addComment(itemId: string, content: string, postedAt = '2026-08-09T10:00:00Z'): string {
+    const id = `note-${++this.seq}`
+    this.notes.set(id, {
+      id,
+      item_id: itemId,
+      content,
+      posted_at: postedAt,
+      is_deleted: false,
+    })
+    this.pendingNotes.add(id)
+    return id
+  }
+
+  deleteComment(id: string): void {
+    const existing = this.notes.get(id)
+    if (existing === undefined) return
+    this.notes.set(id, { ...existing, is_deleted: true })
+    this.pendingNotes.add(id)
+  }
+
   async sync(syncToken: string): Promise<SyncResponse> {
-    const ids = syncToken === '*' ? [...this.items.keys()] : [...this.pending]
+    const full = syncToken === '*'
+    const ids = full ? [...this.items.keys()] : [...this.pending]
+    const noteIds = full ? [...this.notes.keys()] : [...this.pendingNotes]
     this.pending = new Set()
+    this.pendingNotes = new Set()
 
     return {
       sync_token: `todoist-${++this.seq}`,
-      full_sync: syncToken === '*',
+      full_sync: full,
       items: ids
         .map((id) => this.items.get(id))
         .filter((item): item is TodoistItem => item !== undefined),
       projects: [],
+      notes: noteIds
+        .map((id) => this.notes.get(id))
+        .filter((note): note is TodoistNote => note !== undefined),
     }
   }
 
@@ -66,6 +100,8 @@ export class FakeTodoist {
             description: (args['description'] as string | undefined) ?? '',
             due: (args['due'] as TodoistItem['due']) ?? null,
             duration: (args['duration'] as TodoistItem['duration']) ?? null,
+            priority: 1,
+            labels: [],
             checked: false,
             is_deleted: false,
           })
@@ -115,6 +151,24 @@ interface WriteRecord {
   op: 'insert' | 'patch' | 'move' | 'delete'
   calendarId: string
   eventId?: string
+}
+
+/**
+ * Merge a start/end slot the way Google's patch does: nested objects are
+ * deep-merged, and an explicit `null` is what clears a field. Omitting a key
+ * leaves the previous value in place.
+ */
+function mergeSlot(
+  existing: GoogleEvent['start'],
+  incoming: GoogleEvent['start'],
+): GoogleEvent['start'] {
+  if (incoming === undefined) return existing
+
+  const merged = { ...existing, ...incoming } as Record<string, unknown>
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === null) delete merged[key]
+  }
+  return merged as GoogleEvent['start']
 }
 
 export class FakeGoogle {
@@ -204,12 +258,26 @@ export class FakeGoogle {
     const saved: GoogleEvent = {
       ...existing,
       ...event,
+      start: mergeSlot(existing.start, event.start),
+      end: mergeSlot(existing.end, event.end),
       extendedProperties: {
         private: {
           ...existing.extendedProperties?.private,
           ...event.extendedProperties?.private,
         },
       },
+    }
+
+    // Google rejects a slot carrying both a date and a dateTime with
+    // "Invalid start time." Reproducing that here is the point: without it a
+    // stale all-day `date` surviving a patch to a timed event looks fine
+    // locally and 400s in production.
+    for (const slot of [saved.start, saved.end]) {
+      if (slot?.date != null && slot.dateTime != null) {
+        const error = new Error('Invalid start time.') as Error & { code: number }
+        error.code = 400
+        throw error
+      }
     }
     this.store(calendarId).set(eventId, saved)
     this.touch(calendarId, saved)

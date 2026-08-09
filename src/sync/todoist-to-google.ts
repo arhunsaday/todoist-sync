@@ -1,3 +1,4 @@
+import { getNotes } from '../db/items.js'
 import * as links from '../db/links.js'
 import type { GoogleEvent } from '../google/client.js'
 import { logger } from '../logger.js'
@@ -45,14 +46,15 @@ export async function applyTodoistItem(
     return
   }
 
-  const fingerprint = todoistFingerprint(item)
+  const notes = getNotes(ctx.db, item.id)
+  const fingerprint = todoistFingerprint(item, notes)
   if (link !== undefined && link.todoistFingerprint === fingerprint) {
     logger.debug({ itemId: item.id }, 'echo of our own write; skipping')
     return
   }
 
   const options = await ctx.mappingOptions(targetCalendar)
-  const fields = toGoogleEvent(item, options)
+  const fields = toGoogleEvent(item, options, notes)
 
   // An undated task has no place on a calendar.
   if (fields === null) {

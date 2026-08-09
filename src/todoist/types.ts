@@ -29,11 +29,23 @@ export const itemSchema = z.object({
   description: z.string().nullish(),
   due: dueSchema.nullish(),
   duration: durationSchema.nullish(),
+  /** Inverted relative to the UI: 4 is p1 (urgent), 1 is p4 (no priority). */
+  priority: z.number().int().min(1).max(4).default(1),
+  labels: z.array(z.string()).default([]),
   checked: z.boolean().default(false),
   is_deleted: z.boolean().default(false),
   added_at: z.string().nullish(),
   updated_at: z.string().nullish(),
   completed_at: z.string().nullish(),
+})
+
+/** A task comment. Todoist calls these notes. */
+export const noteSchema = z.object({
+  id: idSchema,
+  item_id: idSchema.nullish(),
+  content: z.string().default(''),
+  posted_at: z.string().nullish(),
+  is_deleted: z.boolean().default(false),
 })
 
 export const projectSchema = z.object({
@@ -48,6 +60,7 @@ export const syncResponseSchema = z.object({
   full_sync: z.boolean().default(false),
   items: z.array(itemSchema).default([]),
   projects: z.array(projectSchema).default([]),
+  notes: z.array(noteSchema).default([]),
 })
 
 const commandErrorSchema = z.object({
@@ -78,6 +91,7 @@ export type TodoistDue = z.infer<typeof dueSchema>
 export type TodoistDuration = z.infer<typeof durationSchema>
 export type TodoistItem = z.infer<typeof itemSchema>
 export type TodoistProject = z.infer<typeof projectSchema>
+export type TodoistNote = z.infer<typeof noteSchema>
 export type SyncResponse = z.infer<typeof syncResponseSchema>
 export type CommandResponse = z.infer<typeof commandResponseSchema>
 export type TokenResponse = z.infer<typeof tokenResponseSchema>

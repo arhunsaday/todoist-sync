@@ -1,4 +1,5 @@
 import { getConfig } from '../config.js'
+import { getItem, getNotes } from '../db/items.js'
 import * as links from '../db/links.js'
 import { todoistIdOf, type GoogleEvent } from '../google/client.js'
 import { logger } from '../logger.js'
@@ -27,13 +28,23 @@ import {
  * reconstructed rather than read back. If Todoist normalises something
  * differently the next reconcile corrects it in one extra pass — it cannot
  * loop, because that pass stores the value Todoist actually reported.
+ *
+ * Projected onto the cached item so fields the calendar has no say over —
+ * priority, labels — survive. Rebuilding from scratch would predict
+ * `priority: 1` for a p1 task, the prediction would miss, and every calendar
+ * edit would trigger a pointless re-push.
  */
 function expectedTodoistFingerprint(
+  ctx: SyncContext,
   itemId: string,
   projectId: string,
   fields: TodoistFields,
 ): string {
+  const current = getItem(ctx.db, itemId)
+  const notes = getNotes(ctx.db, itemId)
+
   const projected: TodoistItem = {
+    ...(current ?? { priority: 1, labels: [] }),
     id: itemId,
     project_id: projectId,
     content: fields.content,
@@ -44,13 +55,13 @@ function expectedTodoistFingerprint(
         : {
             date: fields.due.date,
             timezone: fields.due.timezone ?? null,
-            is_recurring: false,
+            is_recurring: current?.due?.is_recurring ?? false,
           },
     duration: fields.duration,
     checked: false,
     is_deleted: false,
   }
-  return todoistFingerprint(projected)
+  return todoistFingerprint(projected, notes)
 }
 
 /** Is this event id present on any other mapped calendar? */
@@ -100,7 +111,7 @@ async function updateLinkedTask(
   const targetProject = ctx.routing.projectForCalendar(calendarId)
   if (targetProject === undefined) return
 
-  const fields = toTodoistFields(event)
+  const fields = toTodoistFields(event, ctx.decorationOptions())
   const commands: TodoistCommand[] = [itemUpdate(link.todoistItemId, fields)]
 
   // Dragging an event to another calendar moves the task to that project.
@@ -120,6 +131,7 @@ async function updateLinkedTask(
     googleCalendarId: calendarId,
     todoistProjectId: targetProject,
     todoistFingerprint: expectedTodoistFingerprint(
+      ctx,
       link.todoistItemId,
       targetProject,
       fields,
@@ -145,7 +157,7 @@ async function createTaskForForeignEvent(
   const projectId = ctx.routing.projectForCalendar(calendarId)
   if (projectId === undefined) return
 
-  const fields = toTodoistFields(event)
+  const fields = toTodoistFields(event, ctx.decorationOptions())
   const command = itemAdd(projectId, fields)
   const response = await ctx.todoist.executeCommands([command])
   const itemId = response.temp_id_mapping[command.temp_id]
@@ -170,7 +182,7 @@ async function createTaskForForeignEvent(
     googleEventId: eventId,
     googleCalendarId: calendarId,
     todoistProjectId: projectId,
-    todoistFingerprint: expectedTodoistFingerprint(itemId, projectId, fields),
+    todoistFingerprint: expectedTodoistFingerprint(ctx, itemId, projectId, fields),
     googleFingerprint: googleFingerprint(tagged, calendarId),
   })
   logger.info(

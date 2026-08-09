@@ -14,7 +14,7 @@ import {
 export const TODOIST_API_BASE = 'https://api.todoist.com/api/v1'
 
 const MAX_ATTEMPTS = 4
-const RESOURCE_TYPES = ['items', 'projects'] as const
+const RESOURCE_TYPES = ['items', 'projects', 'notes'] as const
 
 export class TodoistApiError extends Error {
   constructor(

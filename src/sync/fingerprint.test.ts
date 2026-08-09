@@ -12,6 +12,8 @@ function item(overrides: Partial<TodoistItem> = {}): TodoistItem {
     description: '',
     due: { date: '2026-08-09', is_recurring: false },
     duration: null,
+    priority: 1,
+    labels: [],
     checked: false,
     is_deleted: false,
     ...overrides,

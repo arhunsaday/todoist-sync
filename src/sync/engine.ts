@@ -1,6 +1,15 @@
+import {
+  getItem,
+  putItem,
+  putNote,
+  removeItem,
+  removeNote,
+  removeNotesForItem,
+} from '../db/items.js'
 import * as state from '../db/state.js'
 import { SyncTokenExpiredError } from '../google/client.js'
 import { logger } from '../logger.js'
+import type { TodoistItem, TodoistNote } from '../todoist/types.js'
 import { createSyncContext, type SyncContext, type SyncContextDeps } from './context.js'
 import { applyGoogleEvent } from './google-to-todoist.js'
 import { applyTodoistItem } from './todoist-to-google.js'
@@ -64,19 +73,68 @@ export class SyncEngine {
     })
   }
 
+  /**
+   * Fold the response into the local cache and return every task that needs
+   * re-rendering.
+   *
+   * Comments are the reason this is not just `response.items`: a comment is a
+   * separate resource, so editing one reports the note alone and leaves its
+   * task untouched. Its `item_id` is the only link back to the event that has
+   * to change.
+   */
+  private absorb(response: {
+    items: TodoistItem[]
+    notes: TodoistNote[]
+  }): TodoistItem[] {
+    const { db } = this.ctx
+    const affected = new Map<string, TodoistItem>()
+
+    for (const item of response.items) {
+      if (item.is_deleted) {
+        removeItem(db, item.id)
+        removeNotesForItem(db, item.id)
+      } else {
+        putItem(db, item)
+      }
+      affected.set(item.id, item)
+    }
+
+    for (const note of response.notes) {
+      if (note.is_deleted) removeNote(db, note.id)
+      else putNote(db, note)
+
+      const itemId = note.item_id
+      if (itemId == null || affected.has(itemId)) continue
+
+      // The task itself did not change, so pull it from the cache to re-render.
+      const cached = getItem(db, itemId)
+      if (cached !== undefined) affected.set(itemId, cached)
+    }
+
+    return [...affected.values()]
+  }
+
   private async pullTodoist(): Promise<void> {
     const { db, todoist } = this.ctx
     const response = await todoist.sync(state.getTodoistSyncToken(db))
 
-    if (response.items.length > 0) {
+    // Cache first: applying a change reads the notes back out of the database.
+    const changed = this.ctx.dryRun ? response.items : this.absorb(response)
+
+    if (changed.length > 0) {
       logger.debug(
-        { count: response.items.length, fullSync: response.full_sync },
+        {
+          items: response.items.length,
+          notes: response.notes.length,
+          affected: changed.length,
+          fullSync: response.full_sync,
+        },
         'todoist changes received',
       )
     }
 
     let failures = 0
-    for (const item of response.items) {
+    for (const item of changed) {
       try {
         await applyTodoistItem(this.ctx, item)
       } catch (error) {

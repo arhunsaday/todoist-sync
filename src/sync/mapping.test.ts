@@ -15,6 +15,9 @@ import {
 const options: MappingOptions = {
   defaultDurationMinutes: 60,
   fallbackTimeZone: 'Europe/Paris',
+  syncComments: false,
+  priorityPrefixes: true,
+  labelPrefixes: [{ match: '5min', prefix: '@5min' }],
 }
 
 function item(overrides: Partial<TodoistItem> = {}): TodoistItem {
@@ -25,6 +28,8 @@ function item(overrides: Partial<TodoistItem> = {}): TodoistItem {
     description: '',
     due: null,
     duration: null,
+    priority: 1,
+    labels: [],
     checked: false,
     is_deleted: false,
     ...overrides,
@@ -42,8 +47,8 @@ describe('toGoogleEvent', () => {
       options,
     )
 
-    expect(event?.start).toEqual({ date: '2026-08-09' })
-    expect(event?.end).toEqual({ date: '2026-08-10' })
+    expect(event?.start).toEqual({ date: '2026-08-09', dateTime: null, timeZone: null })
+    expect(event?.end).toEqual({ date: '2026-08-10', dateTime: null, timeZone: null })
   })
 
   it('spans a multi-day duration across the right number of days', () => {
@@ -55,8 +60,8 @@ describe('toGoogleEvent', () => {
       options,
     )
 
-    expect(event?.start).toEqual({ date: '2026-08-09' })
-    expect(event?.end).toEqual({ date: '2026-08-12' })
+    expect(event?.start).toEqual({ date: '2026-08-09', dateTime: null, timeZone: null })
+    expect(event?.end).toEqual({ date: '2026-08-12', dateTime: null, timeZone: null })
   })
 
   it('crosses a month boundary correctly', () => {
@@ -65,7 +70,7 @@ describe('toGoogleEvent', () => {
       options,
     )
 
-    expect(event?.end).toEqual({ date: '2026-09-01' })
+    expect(event?.end).toEqual({ date: '2026-09-01', dateTime: null, timeZone: null })
   })
 
   it('applies the default duration to a timed task with none of its own', () => {
@@ -77,10 +82,12 @@ describe('toGoogleEvent', () => {
     )
 
     expect(event?.start).toEqual({
+      date: null,
       dateTime: '2026-08-09T13:00:00.000Z',
       timeZone: 'Europe/Paris',
     })
     expect(event?.end).toEqual({
+      date: null,
       dateTime: '2026-08-09T14:00:00.000Z',
       timeZone: 'Europe/Paris',
     })
@@ -96,6 +103,7 @@ describe('toGoogleEvent', () => {
     )
 
     expect(event?.end).toEqual({
+      date: null,
       dateTime: '2026-08-09T13:25:00.000Z',
       timeZone: 'UTC',
     })
@@ -110,10 +118,12 @@ describe('toGoogleEvent', () => {
     )
 
     expect(event?.start).toEqual({
+      date: null,
       dateTime: '2026-08-09T13:00:00',
       timeZone: 'Europe/Paris',
     })
     expect(event?.end).toEqual({
+      date: null,
       dateTime: '2026-08-09T14:00:00',
       timeZone: 'Europe/Paris',
     })
@@ -129,6 +139,7 @@ describe('toGoogleEvent', () => {
     )
 
     expect(event?.end).toEqual({
+      date: null,
       dateTime: '2026-08-10T00:30:00',
       timeZone: 'Europe/Paris',
     })
@@ -174,7 +185,7 @@ describe('toTodoistFields', () => {
       summary: 'Standup notes',
       start: { date: '2026-08-09' },
       end: { date: '2026-08-10' },
-    })
+    }, options)
 
     expect(fields).toEqual({
       content: 'Standup notes',
@@ -189,7 +200,7 @@ describe('toTodoistFields', () => {
       summary: 'Conference',
       start: { date: '2026-08-09' },
       end: { date: '2026-08-12' },
-    })
+    }, options)
 
     expect(fields.due).toEqual({ date: '2026-08-09' })
     expect(fields.duration).toEqual({ amount: 3, unit: 'day' })
@@ -200,7 +211,7 @@ describe('toTodoistFields', () => {
       summary: '1:1',
       start: { dateTime: '2026-08-09T13:00:00+02:00', timeZone: 'Europe/Paris' },
       end: { dateTime: '2026-08-09T13:30:00+02:00', timeZone: 'Europe/Paris' },
-    })
+    }, options)
 
     expect(fields.due).toEqual({
       date: '2026-08-09T11:00:00.000Z',
@@ -214,21 +225,21 @@ describe('toTodoistFields', () => {
       summary: 'Instant',
       start: { dateTime: '2026-08-09T13:00:00Z' },
       end: { dateTime: '2026-08-09T13:00:00Z' },
-    })
+    }, options)
 
     expect(fields.duration).toBeNull()
   })
 
   it('substitutes a placeholder for an event with no title', () => {
-    const fields = toTodoistFields({ start: { date: '2026-08-09' }, end: { date: '2026-08-10' } })
+    const fields = toTodoistFields({ start: { date: '2026-08-09' }, end: { date: '2026-08-10' } }, options)
 
     expect(fields.content).toBe('(untitled)')
   })
 
   it('throws on an event with no start at all', () => {
-    expect(() => toTodoistFields({ id: 'evt-1', summary: 'Broken' })).toThrow(
-      /has no start/,
-    )
+    expect(() =>
+      toTodoistFields({ id: 'evt-1', summary: 'Broken' }, options),
+    ).toThrow(/has no start/)
   })
 })
 
@@ -241,7 +252,7 @@ describe('round trip', () => {
       due: { date: '2026-08-09', is_recurring: false },
     })
     const event = toGoogleEvent(source, options)
-    const back = toTodoistFields(event as GoogleEvent)
+    const back = toTodoistFields(event as GoogleEvent, options)
 
     expect(back.content).toBe('Ship it')
     expect(back.due).toEqual({ date: '2026-08-09' })
@@ -259,7 +270,7 @@ describe('round trip', () => {
       duration: { amount: 45, unit: 'minute' },
     })
     const event = toGoogleEvent(source, options)
-    const back = toTodoistFields(event as GoogleEvent)
+    const back = toTodoistFields(event as GoogleEvent, options)
 
     expect(back.due?.date).toBe('2026-08-09T13:00:00.000Z')
     expect(back.due?.timezone).toBe('Europe/Paris')

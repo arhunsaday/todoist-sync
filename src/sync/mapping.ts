@@ -1,5 +1,6 @@
 import type { calendar_v3 } from 'googleapis'
 
+import type { StoredNote } from '../db/items.js'
 import {
   MANAGED_BY_KEY,
   MANAGED_BY_VALUE,
@@ -7,6 +8,14 @@ import {
   type GoogleEvent,
 } from '../google/client.js'
 import type { TodoistDuration, TodoistItem } from '../todoist/types.js'
+import {
+  decorateSummary,
+  normaliseGoogleText,
+  renderDescription,
+  stripCommentsBlock,
+  stripSummaryDecoration,
+  type DecorationOptions,
+} from './decorate.js'
 import {
   addDaysToDate,
   addMinutes,
@@ -19,7 +28,7 @@ import {
   parseTodoistTimestamp,
 } from './time.js'
 
-export interface MappingOptions {
+export interface MappingOptions extends DecorationOptions {
   /** Applied to a timed task that carries no explicit duration. */
   defaultDurationMinutes: number
   /**
@@ -27,6 +36,8 @@ export interface MappingOptions {
    * neither an offset nor a `timeZone`, so a floating task needs one supplied.
    */
   fallbackTimeZone: string
+  /** Append task comments to the event description. */
+  syncComments: boolean
 }
 
 export interface GoogleEventFields {
@@ -64,13 +75,19 @@ export function todoistTaskUrl(itemId: string): string {
 export function toGoogleEvent(
   item: TodoistItem,
   options: MappingOptions,
+  notes: readonly StoredNote[] = [],
 ): GoogleEventFields | null {
   if (item.due == null) return null
 
   const { date, timezone } = item.due
+  const content = item.content.trim() === '' ? UNTITLED : item.content
+  const description = item.description ?? ''
+
   const common = {
-    summary: item.content.trim() === '' ? UNTITLED : item.content,
-    description: item.description ?? '',
+    summary: decorateSummary(content, item, options),
+    description: options.syncComments
+      ? renderDescription(description, notes)
+      : description,
     extendedProperties: {
       private: {
         [TODOIST_ID_KEY]: item.id,
@@ -89,8 +106,13 @@ export function toGoogleEvent(
 
     return {
       ...common,
-      start: { date },
-      end: { date: addDaysToDate(date, days) },
+      // `date` and `dateTime` are mutually exclusive, and Google's patch
+      // deep-merges nested objects: omitting the other one leaves a stale
+      // value in place and the request fails with "Invalid start time." An
+      // explicit null is the only way to clear it, and it is needed on both
+      // branches — a task can gain or lose its time of day either way.
+      start: { date, dateTime: null, timeZone: null },
+      end: { date: addDaysToDate(date, days), dateTime: null, timeZone: null },
     }
   }
 
@@ -111,8 +133,8 @@ export function toGoogleEvent(
 
   return {
     ...common,
-    start: { dateTime: format(start), timeZone },
-    end: { dateTime: format(end), timeZone },
+    start: { date: null, dateTime: format(start), timeZone },
+    end: { date: null, dateTime: format(end), timeZone },
   }
 }
 
@@ -126,11 +148,21 @@ export function toGoogleEvent(
  * Throws if the event has neither a date nor a dateTime, which Google should
  * never produce for a non-cancelled event.
  */
-export function toTodoistFields(event: GoogleEvent): TodoistFields {
-  const summary = event.summary?.trim()
+export function toTodoistFields(
+  event: GoogleEvent,
+  options: DecorationOptions,
+): TodoistFields {
+  // Undo the derived text before it reaches Todoist. Both operations are
+  // idempotent, so this is safe to apply to an undecorated event and to one
+  // that somehow arrived doubly decorated.
+  const rawSummary = event.summary?.trim() ?? ''
+  const summary = stripSummaryDecoration(rawSummary, options).trim()
+
   const common = {
-    content: summary === undefined || summary === '' ? UNTITLED : summary,
-    description: event.description ?? '',
+    content: summary === '' ? UNTITLED : summary,
+    description: stripCommentsBlock(
+      normaliseGoogleText(event.description ?? ''),
+    ),
   }
 
   const startDate = event.start?.date

@@ -2,6 +2,7 @@ import { config as loadDotenv } from 'dotenv'
 import { z } from 'zod'
 
 import { LOG_LEVELS } from './logger.js'
+import type { LabelPrefix } from './sync/decorate.js'
 
 loadDotenv({ quiet: true })
 
@@ -87,6 +88,43 @@ const booleanSchema = z
   .transform((value) => value === 'true')
 
 /**
+ * `LABEL_PREFIXES` is `match:prefix` pairs. `match` is compared against the
+ * label with emoji and punctuation stripped, so `⚡ 5min` matches `5min`.
+ */
+const labelPrefixesSchema = z
+  .string()
+  .default('5min:@5min,30min:@30min,urgent:@urg')
+  .transform((raw, ctx) => {
+    const entries: LabelPrefix[] = []
+
+    for (const pair of raw.split(',')) {
+      const trimmed = pair.trim()
+      if (trimmed === '') continue
+
+      const separator = trimmed.indexOf(':')
+      if (separator === -1) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `expected "match:prefix", got "${trimmed}"`,
+        })
+        continue
+      }
+
+      entries.push({
+        match: trimmed.slice(0, separator).trim(),
+        prefix: trimmed.slice(separator + 1).trim(),
+      })
+    }
+
+    return entries
+  })
+  .pipe(
+    z.array(
+      z.object({ match: z.string().min(1), prefix: z.string().min(1) }),
+    ),
+  )
+
+/**
  * Everything needed to talk to the two APIs — but *not* the mapping.
  *
  * `pnpm list-ids` exists to discover the ids that go into `SYNC_MAPPINGS`, so
@@ -124,6 +162,13 @@ const envSchema = credentialsSchema.extend({
    * RRULE translation layer does nothing.
    */
   SYNC_RECURRING_FOREIGN_EVENTS: booleanSchema.default(false),
+  /** Prepend !P1/!P2/!P3 to event titles for Todoist p1/p2/p3. */
+  PRIORITY_PREFIXES: booleanSchema.default(true),
+  /** `match:prefix` pairs; match ignores emoji and punctuation in the label. */
+  LABEL_PREFIXES: labelPrefixesSchema,
+  /** Append task comments to the event description. */
+  SYNC_COMMENTS: booleanSchema.default(true),
+
   RECONCILE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
   /** Renew Google watch channels expiring within this window. */
   WATCH_RENEW_WITHIN_HOURS: z.coerce.number().int().positive().default(48),

@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
 
+import type { StoredNote } from '../db/items.js'
 import type { GoogleEvent } from '../google/client.js'
 import type { TodoistItem } from '../todoist/types.js'
+import { notesDigest } from './decorate.js'
 import { durationToMinutes, isDateOnly, parseTodoistTimestamp } from './time.js'
 
 /**
@@ -49,7 +51,19 @@ function canonicalEventTime(
   return null
 }
 
-export function todoistFingerprint(item: TodoistItem): string {
+/**
+ * `priority`, `labels`, and `notes` are included because they are rendered
+ * into the event. A change to any of them leaves the rest of the task
+ * untouched, so omitting them here would let a re-prioritised task or a new
+ * comment be discarded as an echo and never reach the calendar.
+ *
+ * Labels are sorted: Todoist's ordering is not stable, and an unsorted list
+ * would produce spurious changes.
+ */
+export function todoistFingerprint(
+  item: TodoistItem,
+  notes: readonly StoredNote[] = [],
+): string {
   return hash({
     content: item.content.trim(),
     description: (item.description ?? '').trim(),
@@ -61,6 +75,9 @@ export function todoistFingerprint(item: TodoistItem): string {
       item.duration == null
         ? null
         : durationToMinutes(item.duration.amount, item.duration.unit),
+    priority: item.priority,
+    labels: [...item.labels].sort(),
+    notes: notesDigest(notes),
   })
 }
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { createTestDb, type Db } from './index.js'
+import { createTestDb, migrate, type Db } from './index.js'
 import * as links from './links.js'
 import * as state from './state.js'
 
@@ -199,13 +199,19 @@ describe('oauth tokens', () => {
 })
 
 describe('migrations', () => {
-  it('is idempotent', () => {
-    const before = db
+  const applied = () =>
+    db
       .prepare<[], { count: number }>(
         'SELECT COUNT(*) AS count FROM schema_migrations',
       )
-      .get()
+      .get()?.count
 
-    expect(before?.count).toBe(1)
+  it('records every migration exactly once, and re-running adds none', () => {
+    const first = applied()
+    expect(first).toBeGreaterThan(0)
+
+    migrate(db)
+
+    expect(applied()).toBe(first)
   })
 })

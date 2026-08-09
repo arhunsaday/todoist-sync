@@ -51,4 +51,28 @@ export const migrations: ReadonlyArray<{ name: string; sql: string }> = [
       );
     `,
   },
+  {
+    name: '002_items_and_notes',
+    sql: `
+      -- Cache of the last known Todoist state, as raw JSON so the shape can
+      -- evolve without a migration.
+      --
+      -- Needed because a comment change does NOT change its task: an
+      -- incremental sync reports the note alone, with no way to re-render the
+      -- event without the task's fields to hand.
+      CREATE TABLE items (
+        id      TEXT PRIMARY KEY,
+        payload TEXT NOT NULL
+      );
+
+      CREATE TABLE notes (
+        id        TEXT PRIMARY KEY,
+        item_id   TEXT NOT NULL,
+        content   TEXT NOT NULL,
+        posted_at TEXT
+      );
+
+      CREATE INDEX notes_item ON notes (item_id);
+    `,
+  },
 ]

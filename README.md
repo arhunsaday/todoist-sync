@@ -46,6 +46,43 @@ Reverse: renaming, rescheduling, or resizing an event updates the task;
 dragging it to another mapped calendar moves the task to that project;
 **deleting an event completes the task**.
 
+### Derived title text and comments
+
+Event titles get prefixes derived from the task, and comments are appended to
+the description:
+
+```
+!P1 @5min Renew the passport
+─────── Todoist comments ───────
+2026-08-09 · booked an appointment for Thursday
+```
+
+- `!P1` / `!P2` / `!P3` from Todoist priority (`PRIORITY_PREFIXES`). Note
+  Todoist's scale is inverted internally — p1 is `priority: 4`.
+- `@5min` / `@30min` / `@urg` from labels (`LABEL_PREFIXES`, `match:prefix`
+  pairs). The match ignores emoji, spaces, and punctuation, so `⚡ 5min` and
+  `5 min` both hit — but `15min` and `45min` deliberately do **not**, which a
+  naive substring test would get wrong.
+- Comments (`SYNC_COMMENTS`) are one-way: Google Calendar has no comment
+  concept to sync back.
+
+**Why this needed care.** Titles and descriptions round-trip, so anything
+derived and added would otherwise be written back into Todoist as if the user
+had typed it. The failure is delayed, which is what makes it dangerous: while
+nothing changes the decorated title is discarded as an echo and everything
+looks correct. The first time the event is edited in Google, the decorated
+summary lands in the task's content — and the next push decorates the already
+decorated text, compounding on every edit after that.
+
+The defence is that **stripping is idempotent and only removes tokens this app
+emits** (`src/sync/decorate.ts`). An `@something` you typed yourself survives;
+a doubled prefix gets cleaned up rather than entrenched. Turning
+`PRIORITY_PREFIXES` off still strips existing `!P` markers, so disabling the
+feature tidies your titles instead of freezing them.
+
+Comments get the same treatment: everything from the marker line onward is
+discarded on the way back, after normalising whatever HTML Google returns.
+
 Events created directly on a mapped calendar become tasks in the paired
 project, and are then tagged so they are managed from that point on. Skipped:
 recurring series, birthdays, working-location and Gmail-generated events, and
@@ -243,7 +280,7 @@ convergence, rather than silently accepting drift from the downtime.
 
 ```bash
 pnpm install
-pnpm test          # 113 tests, no network
+pnpm test          # 172 tests, no network
 pnpm typecheck
 pnpm dev
 ```
@@ -268,3 +305,13 @@ the real services do. Without that, an echo-suppression test proves nothing.
 - Multi-day all-day events map to a Todoist `duration` in days. Watch the
   first live run for `item_update` rejections if Todoist declines a day
   duration on a date-only task.
+- `start.date` and `start.dateTime` are mutually exclusive, and Google's patch
+  **deep-merges** nested objects — so both are always sent with the unused one
+  explicitly `null`. Omitting it leaves a stale value behind and the request
+  fails with `400 Invalid start time.`, which is exactly what happens when a
+  task gains or loses its time of day. The engine tests cover both directions,
+  and the Google fake reproduces the 400 rather than quietly accepting it.
+- Comments live in a separate resource, so editing one does not change its
+  task. The engine maps a changed note back to its `item_id` and re-renders
+  from a local cache of items (`src/db/items.ts`) — otherwise a new comment
+  would not appear until the task itself was next edited.
