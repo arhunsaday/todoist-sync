@@ -1,0 +1,375 @@
+import { beforeEach, describe, expect, it } from 'vitest'
+
+import { createTestDb, type Db } from '../db/index.js'
+import * as links from '../db/links.js'
+import { todoistIdOf } from '../google/client.js'
+import type { TodoistItem } from '../todoist/types.js'
+import { SyncEngine } from './engine.js'
+import { FakeGoogle, FakeTodoist } from './fakes.js'
+import { Routing } from './routing.js'
+
+const WORK = 'work@group.calendar.google.com'
+const HOME = 'home@group.calendar.google.com'
+
+const routing = new Routing([
+  { todoistProjectId: 'proj-1', googleCalendarId: WORK },
+  { todoistProjectId: 'proj-2', googleCalendarId: HOME },
+])
+
+let db: Db
+let todoist: FakeTodoist
+let google: FakeGoogle
+let engine: SyncEngine
+
+beforeEach(() => {
+  db = createTestDb()
+  todoist = new FakeTodoist()
+  google = new FakeGoogle([WORK, HOME])
+  engine = new SyncEngine({
+    db,
+    todoist: todoist.asClient(),
+    google: google.asClient(),
+    routing,
+  })
+})
+
+function task(overrides: Partial<TodoistItem> = {}): TodoistItem {
+  return {
+    id: 'item-1',
+    project_id: 'proj-1',
+    content: 'Write the sync engine',
+    description: '',
+    due: { date: '2026-08-09', is_recurring: false },
+    duration: null,
+    checked: false,
+    is_deleted: false,
+    ...overrides,
+  }
+}
+
+function writeCount(): number {
+  return todoist.writes.length + google.writes.length
+}
+
+describe('Todoist → Google', () => {
+  it('creates an event on the calendar mapped to the task project', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    const events = google.eventsOn(WORK)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.summary).toBe('Write the sync engine')
+    expect(todoistIdOf(events[0]!)).toBe('item-1')
+    expect(google.eventsOn(HOME)).toHaveLength(0)
+  })
+
+  it('records the pairing', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    const link = links.findByTodoistItemId(db, 'item-1')
+    expect(link?.googleCalendarId).toBe(WORK)
+  })
+
+  it('ignores tasks in unmapped projects', async () => {
+    todoist.seed(task({ project_id: 'proj-unmapped' }))
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+    expect(links.listAll(db)).toHaveLength(0)
+  })
+
+  it('creates no event for an undated task', async () => {
+    todoist.seed(task({ due: null }))
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+  })
+
+  it('propagates a content edit', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { content: 'Renamed' })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)[0]?.summary).toBe('Renamed')
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+
+  it('deletes the event when the task is completed', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { checked: true })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+    expect(links.findByTodoistItemId(db, 'item-1')).toBeUndefined()
+  })
+
+  it('deletes the event when the due date is cleared', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { due: null })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+  })
+
+  it('moves the event when the task changes project', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { project_id: 'proj-2' })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+    expect(links.findByTodoistItemId(db, 'item-1')?.googleCalendarId).toBe(HOME)
+  })
+
+  it('deletes the event when the task moves out of every mapped project', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    todoist.edit('item-1', { project_id: 'proj-unmapped' })
+    await engine.reconcile()
+
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+    expect(links.findByTodoistItemId(db, 'item-1')).toBeUndefined()
+  })
+
+  it('recreates an event that disappeared behind our back', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const originalId = google.eventsOn(WORK)[0]?.id
+
+    google.userDelete(WORK, originalId!)
+    todoist.edit('item-1', { content: 'Still needed' })
+    await engine.reconcile()
+
+    const events = google.eventsOn(WORK)
+    expect(events).toHaveLength(1)
+    expect(events[0]?.summary).toBe('Still needed')
+  })
+})
+
+describe('Google → Todoist', () => {
+  it('creates a task for an event added straight to a mapped calendar', async () => {
+    google.seed(WORK, {
+      summary: 'Dentist',
+      start: { dateTime: '2026-08-09T09:00:00Z' },
+      end: { dateTime: '2026-08-09T10:00:00Z' },
+    })
+    await engine.reconcile()
+
+    const created = [...todoist.items.values()]
+    expect(created).toHaveLength(1)
+    expect(created[0]?.content).toBe('Dentist')
+    expect(created[0]?.project_id).toBe('proj-1')
+  })
+
+  it('tags the foreign event so it is recognised afterwards', async () => {
+    const eventId = google.seed(WORK, {
+      summary: 'Dentist',
+      start: { date: '2026-08-09' },
+      end: { date: '2026-08-10' },
+    })
+    await engine.reconcile()
+
+    const event = google.eventsOn(WORK).find((e) => e.id === eventId)
+    expect(todoistIdOf(event!)).toBeDefined()
+    expect(links.findByGoogleEventId(db, WORK, eventId)).toBeDefined()
+  })
+
+  it('skips recurring foreign events', async () => {
+    google.seed(WORK, {
+      summary: 'Daily standup',
+      recurrence: ['RRULE:FREQ=DAILY'],
+      start: { dateTime: '2026-08-09T09:00:00Z' },
+      end: { dateTime: '2026-08-09T09:15:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.size).toBe(0)
+  })
+
+  it('skips birthdays and other generated events', async () => {
+    google.seed(WORK, {
+      summary: "Someone's birthday",
+      eventType: 'birthday',
+      start: { date: '2026-08-09' },
+      end: { date: '2026-08-10' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.size).toBe(0)
+  })
+
+  it('skips invitations this user declined', async () => {
+    google.seed(WORK, {
+      summary: 'Optional sync',
+      attendees: [{ self: true, responseStatus: 'declined' }],
+      start: { dateTime: '2026-08-09T09:00:00Z' },
+      end: { dateTime: '2026-08-09T10:00:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.size).toBe(0)
+  })
+
+  it('reschedules the task when the event is dragged to a new time', async () => {
+    todoist.seed(
+      task({ due: { date: '2026-08-09T09:00:00.000000Z', is_recurring: false } }),
+    )
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, {
+      start: { dateTime: '2026-08-09T14:00:00Z' },
+      end: { dateTime: '2026-08-09T15:00:00Z' },
+    })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.due?.date).toBe('2026-08-09T14:00:00.000Z')
+  })
+
+  it('renames the task when the event is renamed', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, { summary: 'Renamed in Google' })
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.content).toBe('Renamed in Google')
+  })
+
+  it('completes the task when the event is deleted', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userDelete(WORK, eventId!)
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.checked).toBe(true)
+    expect(links.findByTodoistItemId(db, 'item-1')).toBeUndefined()
+  })
+
+  // Google reports a cross-calendar move as a cancellation on the source
+  // calendar. Reading that as a deletion would complete a task the user only
+  // dragged to another calendar.
+  it('moves the task, and does NOT complete it, when the event is dragged to another calendar', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userMove(WORK, eventId!, HOME)
+    await engine.reconcile()
+
+    expect(todoist.items.get('item-1')?.checked).toBe(false)
+    expect(todoist.items.get('item-1')?.project_id).toBe('proj-2')
+    expect(links.findByTodoistItemId(db, 'item-1')?.googleCalendarId).toBe(HOME)
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+  })
+})
+
+describe('loop prevention', () => {
+  it('performs no writes on a reconcile with nothing to do', async () => {
+    await engine.reconcile()
+    expect(writeCount()).toBe(0)
+  })
+
+  it('settles after mirroring a new task', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+
+    const afterFirst = writeCount()
+    expect(afterFirst).toBeGreaterThan(0)
+
+    await engine.reconcile()
+    await engine.reconcile()
+
+    expect(writeCount()).toBe(afterFirst)
+  })
+
+  it('settles after adopting a foreign calendar event', async () => {
+    google.seed(WORK, {
+      summary: 'Dentist',
+      start: { dateTime: '2026-08-09T09:00:00Z' },
+      end: { dateTime: '2026-08-09T10:00:00Z' },
+    })
+    await engine.reconcile()
+
+    const afterFirst = writeCount()
+    await engine.reconcile()
+    await engine.reconcile()
+
+    expect(writeCount()).toBe(afterFirst)
+    expect(todoist.items.size).toBe(1)
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+
+  it('settles after a Google-side edit propagates back', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userEdit(WORK, eventId!, { summary: 'Renamed in Google' })
+    await engine.reconcile()
+    await engine.reconcile()
+
+    const settled = writeCount()
+    await engine.reconcile()
+    expect(writeCount()).toBe(settled)
+  })
+
+  it('settles after a cross-calendar drag', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const eventId = google.eventsOn(WORK)[0]?.id
+
+    google.userMove(WORK, eventId!, HOME)
+    await engine.reconcile()
+    await engine.reconcile()
+
+    const settled = writeCount()
+    await engine.reconcile()
+    expect(writeCount()).toBe(settled)
+  })
+})
+
+describe('concurrency', () => {
+  it('coalesces overlapping reconciles instead of interleaving them', async () => {
+    todoist.seed(task())
+
+    await Promise.all([
+      engine.reconcile(),
+      engine.reconcile(),
+      engine.reconcile(),
+    ])
+
+    // Three triggers, one event — not three.
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+})
+
+describe('dry run', () => {
+  it('performs no writes and persists no links', async () => {
+    const dryEngine = new SyncEngine({
+      db,
+      todoist: todoist.asClient(),
+      google: google.asClient(),
+      routing,
+      dryRun: true,
+    })
+
+    todoist.seed(task())
+    await dryEngine.reconcile()
+
+    expect(links.listAll(db)).toHaveLength(0)
+  })
+})
