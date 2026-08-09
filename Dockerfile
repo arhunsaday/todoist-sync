@@ -35,15 +35,17 @@ COPY --from=build /app/package.json ./
 # recovers from that). Deliberately no VOLUME instruction: Railway rejects it,
 # and the mount is the platform's job either way — `docker run -v`, a compose
 # volume, or a Railway volume mounted at /data.
-#
-# Creating the directory here means a fresh Docker named volume inherits this
-# ownership. Railway mounts its volumes as root regardless, which breaks a
-# non-root USER; their documented fix is to set RAILWAY_RUN_UID=0 on the
-# service. See the README.
 ENV DATABASE_PATH=/data/sync.db
 RUN mkdir -p /data && chown node:node /data
 
+# The container intentionally starts as root and the entrypoint drops to
+# `node`. Volumes are mounted root-owned *after* the image is built, so a
+# `USER node` here could never write to one — the ownership fix has to happen
+# at run time, which is what the entrypoint does.
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["docker-entrypoint.sh"]
+
 EXPOSE 3000
-USER node
 
 CMD ["node", "dist/index.js"]
