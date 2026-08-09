@@ -7,11 +7,14 @@
 #                       absolute, inside the volume. Do NOT copy the relative
 #                       default out of .env — it resolves to /app/data, which
 #                       is not writable and is wiped on every redeploy.
-#   RAILWAY_RUN_UID=0   the image runs as `node`, and Railway mounts volumes
-#                       as root, so without this every write to /data fails
 #   PUBLIC_URL          the service's public origin, e.g.
 #                       https://<name>.up.railway.app (must match the OAuth
 #                       redirect URIs registered with Google and Todoist)
+#   SYNC_MAPPINGS       leave empty on the first deploy; build it at /setup/ids
+#
+# RAILWAY_RUN_UID is deliberately NOT needed. Railway mounts volumes root-owned,
+# but the image's entrypoint takes ownership of the database directory and then
+# drops to the unprivileged `node` user, so the process never runs as root.
 #
 # Railway injects PORT itself; the app reads it.
 

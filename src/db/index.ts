@@ -27,9 +27,11 @@ function describeOpenFailure(path: string, error: unknown): string {
         'rather than your mounted volume — the data would not survive a ' +
         'redeploy even if this succeeded. Set it to an absolute path under the ' +
         'mount, e.g. DATABASE_PATH=/data/sync.db.'
-      : '\nThe directory is not writable by this process. If the mount is ' +
-        'owned by root and the container runs as a non-root user, grant access ' +
-        '— on Railway that means setting RAILWAY_RUN_UID=0 on the service.',
+      : '\nThe directory is not writable by this process. In a container the ' +
+        'entrypoint normally takes ownership of it before dropping to the ' +
+        '`node` user, so seeing this means either the container was started ' +
+        'with an explicit --user (which skips that step) or the entrypoint was ' +
+        'overridden. Outside a container, check the directory permissions.',
     `\nUnderlying error: ${(error as Error).message}`,
   ].join('')
 }

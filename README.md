@@ -181,21 +181,33 @@ docker build -t t2gc . && docker run -p 3000:3000 -v t2gc-data:/data --env-file 
 
 ### Railway
 
-`railway.toml` covers the build and deploy settings. Two things it cannot
-express, both required:
+`railway.toml` covers the build and deploy settings. What it cannot express:
 
-1. **Attach a volume** — Service → Settings → Volumes, mount path `/data`.
-   Without it the link table is wiped on every redeploy and the next sync
-   duplicates every event. (`pnpm rebuild-links` recovers, but avoid needing
-   it.) The Dockerfile deliberately has no `VOLUME` instruction; Railway
-   rejects builds that use one.
-2. **Set `RAILWAY_RUN_UID=0`** — the image runs as the non-root `node` user
-   and Railway mounts volumes as root, so every write to `/data` fails
-   otherwise. This is Railway's own documented workaround.
+**Attach a volume** — Service → Settings → Volumes, mount path `/data`.
+Without it the link table is wiped on every redeploy and the next sync
+duplicates every event (`pnpm rebuild-links` recovers, but avoid needing it).
+The Dockerfile deliberately has no `VOLUME` instruction; Railway rejects builds
+that use one.
 
-Then set `PUBLIC_URL` to `https://<name>.up.railway.app` and register that
-origin's `/setup/google/callback` and `/setup/todoist/callback` with Google
-and Todoist. Railway injects `PORT` itself.
+Then set these service variables:
+
+```
+DATABASE_PATH=/data/sync.db
+PUBLIC_URL=https://<name>.up.railway.app
+SYNC_MAPPINGS=            # empty on first deploy; build it at /setup/ids
+```
+
+`DATABASE_PATH` **must be absolute and inside the mount.** Copying the
+relative local default out of `.env` is the most likely way to break this: it
+resolves to `/app/data`, which is not writable, and would not survive a
+redeploy even if it were. Railway injects `PORT` itself.
+
+`RAILWAY_RUN_UID=0` is **not** needed, despite being Railway's documented
+answer to volume permissions. Railway mounts volumes root-owned after the image
+is built, so no build-time `chown` can help — but the entrypoint takes
+ownership of the database directory at startup and then drops to the
+unprivileged `node` user, so the process never runs as root. Verified against a
+`root:root` mode-`700` mount.
 
 ### Webhook URL requirements
 
