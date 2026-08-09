@@ -148,10 +148,20 @@ export function createApp(deps: AppDeps): Hono {
     // Always 200, including before setup is finished: a failing healthcheck
     // would have the platform restart the container in a loop, and you could
     // never reach /setup to authorize it.
+    const blocked = deps.getEngine()?.blockedCalendars ?? []
+
     return c.json({
-      status: deps.getEngine() === undefined ? 'awaiting-setup' : 'ok',
+      status:
+        deps.getEngine() === undefined
+          ? 'awaiting-setup'
+          : blocked.length > 0
+            ? 'blocked'
+            : 'ok',
       authorized: { todoist, google },
       mappings,
+      // Calendars the circuit breaker is refusing. Non-empty means a pass would
+      // have completed an implausible number of tasks and was rejected.
+      blockedCalendars: blocked,
     })
   })
 

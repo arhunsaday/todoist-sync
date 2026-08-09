@@ -659,6 +659,101 @@ describe('full resync', () => {
   })
 })
 
+// MAX_COMPLETIONS_PER_SYNC is 3 in the test environment.
+describe('completion circuit breaker', () => {
+  /** Same fakes and database, but with the guard effectively off. */
+  function permissiveEngine(): SyncEngine {
+    return new SyncEngine({
+      db,
+      todoist: todoist.asClient(),
+      google: google.asClient(),
+      routing,
+      maxCompletionsPerSync: 0,
+    })
+  }
+
+  async function seedMirroredTasks(count: number): Promise<string[]> {
+    for (let i = 1; i <= count; i++) {
+      todoist.seed(task({ id: `item-${i}`, content: `Task ${i}` }))
+    }
+    await engine.reconcile()
+    return google.eventsOn(WORK).map((event) => event.id as string)
+  }
+
+  it('lets a normal number of deletions through', async () => {
+    const ids = await seedMirroredTasks(3)
+    for (const id of ids) google.userDelete(WORK, id)
+
+    await engine.reconcile()
+
+    expect([...todoist.items.values()].every((item) => item.checked)).toBe(true)
+    expect(engine.blockedCalendars).toEqual([])
+  })
+
+  it('refuses a pass that would complete too many tasks', async () => {
+    const ids = await seedMirroredTasks(5)
+    for (const id of ids) google.userDelete(WORK, id)
+
+    await engine.reconcile()
+
+    // Nothing applied at all — not even a partial sweep.
+    expect([...todoist.items.values()].some((item) => item.checked)).toBe(false)
+    expect(engine.blockedCalendars).toEqual([WORK])
+  })
+
+  // Failing closed only works if the changes survive. The cursor must not have
+  // advanced, so the same pass is offered again rather than lost.
+  it('neither applies nor loses the changes', async () => {
+    const ids = await seedMirroredTasks(5)
+    for (const id of ids) google.userDelete(WORK, id)
+    await engine.reconcile()
+    await engine.reconcile()
+
+    expect([...todoist.items.values()].some((item) => item.checked)).toBe(false)
+
+    // Raising the limit lets the very same deletions through, which is only
+    // possible because the cursor was never advanced.
+    await permissiveEngine().reconcile()
+
+    expect([...todoist.items.values()].every((item) => item.checked)).toBe(true)
+  })
+
+  it('reports nothing blocked once the pass is let through', async () => {
+    const ids = await seedMirroredTasks(5)
+    for (const id of ids) google.userDelete(WORK, id)
+    await engine.reconcile()
+    expect(engine.blockedCalendars).toEqual([WORK])
+
+    const permissive = permissiveEngine()
+    await permissive.reconcile()
+
+    expect(permissive.blockedCalendars).toEqual([])
+  })
+
+  it('does not stall the other calendars', async () => {
+    const ids = await seedMirroredTasks(5)
+    for (const id of ids) google.userDelete(WORK, id)
+    todoist.seed(task({ id: 'home-1', project_id: 'proj-2' }))
+
+    await engine.reconcile()
+
+    expect(engine.blockedCalendars).toEqual([WORK])
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+  })
+
+  // Cross-calendar moves arrive as cancellations too, but complete nothing —
+  // counting them would trip the breaker on a legitimate bulk reorganisation.
+  it('does not count cross-calendar moves', async () => {
+    const ids = await seedMirroredTasks(5)
+    for (const id of ids) google.userMove(WORK, id, HOME)
+
+    await engine.reconcile()
+
+    expect(engine.blockedCalendars).toEqual([])
+    expect([...todoist.items.values()].some((item) => item.checked)).toBe(false)
+  })
+})
+
 describe('concurrency', () => {
   it('coalesces overlapping reconciles instead of interleaving them', async () => {
     todoist.seed(task())

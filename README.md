@@ -125,9 +125,10 @@ and untouched since costs nothing and is never revisited.
 
 Full passes happen only when a cursor is missing:
 
-- **First run after a cold start.** No stored cursor means `sync_token=*`, so
-  every existing task is imported. This is also what happens if the volume is
-  lost — run `pnpm rebuild-links` first, or you get duplicates.
+- **Every start.** Boot re-links managed events from their `todoistId` tags and
+  then does a full sync, so a cold start imports every existing task and a
+  restart against a lost volume adopts the events already there rather than
+  duplicating them.
 - **Google's `410 GONE`.** An expired `syncToken` clears itself and re-lists
   that calendar in full. Self-healing, on Google's schedule.
 - **A manual resync.** See below.
@@ -173,7 +174,30 @@ lets you un-complete.
 | **Stop the service** | Nothing. Cursors persist; on restart the incremental sync resumes and catches up on everything that changed while it was down. Google's push channels lapse and are re-registered at boot. |
 | **Delete a mapped Google calendar** | `events.list` 404s, the reconcile logs an error and retries. **No tasks are touched** — a deleted calendar reports no cancellations, so nothing reads as "the user deleted these events". Remove it from `SYNC_MAPPINGS` to stop the errors. |
 | **Wipe the database** | Not destructive, but you must re-authorize at `/setup` — the OAuth tokens live there. Startup then re-links existing events by their `todoistId` tag before syncing, so nothing is duplicated. |
-| **Delete every event in a mapped calendar** | ⚠️ The one genuinely damaging case. Each deletion is read as "task done", so those tasks get **completed** in Todoist. Recoverable (un-complete them), but disruptive. Stop the service first if you plan to clear a calendar. |
+| **Delete every event in a mapped calendar** | Each deletion is read as "task done", so this is the one path to widespread change. Guarded by the circuit breaker below. |
+
+### The completion circuit breaker
+
+Before applying a Google pass, the engine counts how many tasks it would
+complete. Over `MAX_COMPLETIONS_PER_SYNC` (default 25, `0` disables) it
+**refuses the whole pass** and leaves the sync token untouched — so the changes
+are neither applied nor lost. Nothing is half-done.
+
+The refusal is logged at `error` and the calendar appears in
+`blockedCalendars` on `/health`, with `status: "blocked"`. To recover: restore
+the calendar, or raise the limit and let the pass through. Because the cursor
+never moved, the same changes are still waiting.
+
+Two details that make it usable rather than annoying:
+
+- **A bulk cross-calendar move does not trip it.** Google reports a move as a
+  cancellation on the source calendar, indistinguishable from a deletion until
+  each event is looked for elsewhere. The cheap count runs first, costing no
+  API calls; only once it exceeds the limit are the probes paid for, to confirm
+  the deletions are real. Reorganising your calendars will not be mistaken for
+  destroying them.
+- **Only the affected calendar stalls.** The other three, and the whole Todoist
+  direction, keep syncing.
 
 ### Conflict policy
 
@@ -368,7 +392,7 @@ convergence, rather than silently accepting drift from the downtime.
 
 ```bash
 pnpm install
-pnpm test          # 202 tests, no network
+pnpm test          # 208 tests, no network
 pnpm typecheck
 pnpm dev
 ```

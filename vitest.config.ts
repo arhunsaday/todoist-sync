@@ -21,6 +21,8 @@ export default defineConfig({
       DEFAULT_EVENT_DURATION_MINUTES: '60',
       SYNC_FOREIGN_EVENTS: 'true',
       SYNC_RECURRING_FOREIGN_EVENTS: 'false',
+      // Low on purpose, so the circuit-breaker tests stay readable.
+      MAX_COMPLETIONS_PER_SYNC: '3',
     },
   },
 })

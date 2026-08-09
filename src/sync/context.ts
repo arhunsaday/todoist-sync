@@ -14,6 +14,8 @@ export interface SyncContextDeps {
   routing: Routing
   /** Log intended writes without performing them, and skip link persistence. */
   dryRun?: boolean
+  /** Overrides `MAX_COMPLETIONS_PER_SYNC`; 0 disables the guard. */
+  maxCompletionsPerSync?: number
 }
 
 /**
@@ -23,6 +25,7 @@ export interface SyncContextDeps {
  */
 export interface SyncContext extends SyncContextDeps {
   dryRun: boolean
+  maxCompletionsPerSync: number
   /** Title decoration rules, needed on the reverse path to undo them. */
   decorationOptions(): DecorationOptions
   mappingOptions(calendarId: string): Promise<MappingOptions>
@@ -36,6 +39,8 @@ export function createSyncContext(deps: SyncContextDeps): SyncContext {
   return {
     ...deps,
     dryRun,
+    maxCompletionsPerSync:
+      deps.maxCompletionsPerSync ?? getConfig().MAX_COMPLETIONS_PER_SYNC,
 
     decorationOptions(): DecorationOptions {
       const config = getConfig()

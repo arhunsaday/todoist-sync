@@ -8,12 +8,20 @@ import {
 } from '../db/items.js'
 import * as links from '../db/links.js'
 import * as state from '../db/state.js'
-import { SyncTokenExpiredError, todoistIdOf } from '../google/client.js'
+import {
+  SyncTokenExpiredError,
+  todoistIdOf,
+  type GoogleEvent,
+} from '../google/client.js'
 import { logger } from '../logger.js'
 import type { TodoistItem, TodoistNote } from '../todoist/types.js'
 import { createSyncContext, type SyncContext, type SyncContextDeps } from './context.js'
 import { googleFingerprint } from './fingerprint.js'
-import { applyGoogleEvent } from './google-to-todoist.js'
+import {
+  applyGoogleEvent,
+  isGenuineDeletion,
+  wouldCompleteTask,
+} from './google-to-todoist.js'
 import { applyTodoistItem } from './todoist-to-google.js'
 
 /**
@@ -34,6 +42,8 @@ export class SyncEngine {
   private readonly ctx: SyncContext
   private running = false
   private dirty = false
+  /** Calendars whose pass the circuit breaker is currently refusing. */
+  private readonly blocked = new Set<string>()
 
   constructor(deps: SyncContextDeps) {
     this.ctx = createSyncContext(deps)
@@ -65,6 +75,11 @@ export class SyncEngine {
     } finally {
       this.running = false
     }
+  }
+
+  /** Calendars stalled by the circuit breaker; surfaced on /health. */
+  get blockedCalendars(): string[] {
+    return [...this.blocked]
   }
 
   /** Fire-and-forget entry point for webhook handlers and timers. */
@@ -237,6 +252,60 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * Refuse a pass that would complete an implausible number of tasks.
+   *
+   * Deleting an event is read as "task done", so clearing a calendar in the
+   * Google UI would complete every corresponding task. That is the only way
+   * this app can do widespread damage — it cannot delete a Todoist task at all
+   * — so it is worth a guard.
+   *
+   * Counted before anything is applied, and the sync token is left untouched:
+   * the changes are neither applied nor lost. Once you raise the limit or fix
+   * the calendar, the same pass runs again and goes through. Failing closed and
+   * stalling one calendar beats silently completing two hundred tasks.
+   */
+  private async tripsCircuitBreaker(
+    calendarId: string,
+    events: GoogleEvent[],
+  ): Promise<boolean> {
+    const limit = this.ctx.maxCompletionsPerSync
+    if (limit === 0) return false
+
+    const clear = (): boolean => {
+      if (this.blocked.delete(calendarId)) {
+        logger.info({ calendarId }, 'calendar no longer blocked')
+      }
+      return false
+    }
+
+    // Cheap pass first, so an ordinary reconcile costs no extra API calls.
+    const candidates = events.filter((event) =>
+      wouldCompleteTask(this.ctx, calendarId, event),
+    )
+    if (candidates.length <= limit) return clear()
+
+    // Suspicion raised. Now pay for the probes: a bulk cross-calendar move
+    // looks identical to a bulk deletion until each event is looked for
+    // elsewhere, and refusing a legitimate reorganisation would be its own bug.
+    let completions = 0
+    for (const event of candidates) {
+      if (await isGenuineDeletion(this.ctx, calendarId, event)) completions++
+    }
+
+    if (completions <= limit) return clear()
+
+    this.blocked.add(calendarId)
+    logger.error(
+      { calendarId, completions, limit },
+      'refusing to apply this pass: it would complete far more tasks than ' +
+        'expected, which usually means events were deleted en masse. Nothing ' +
+        'has been changed and no cursor advanced. Check the calendar, then ' +
+        'either restore it or raise MAX_COMPLETIONS_PER_SYNC to let it through.',
+    )
+    return true
+  }
+
   private async pullGoogle(calendarId: string): Promise<void> {
     const { db, google } = this.ctx
     const syncToken = state.getGoogleSyncToken(db, calendarId)
@@ -260,6 +329,8 @@ export class SyncEngine {
         'google changes received',
       )
     }
+
+    if (await this.tripsCircuitBreaker(calendarId, result.events)) return
 
     let failures = 0
     for (const event of result.events) {

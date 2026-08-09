@@ -175,13 +175,24 @@ export class FakeGoogle {
   readonly writes: WriteRecord[] = []
 
   private readonly calendars = new Map<string, Map<string, GoogleEvent>>()
-  private readonly pending = new Map<string, GoogleEvent[]>()
+  /**
+   * Append-only change log per calendar, plus where each issued token points
+   * into it.
+   *
+   * Modelled this way because a sync token is a server-side cursor: if the
+   * client never persists the token it was given, the next request with the old
+   * one returns the same changes again. A fake that simply drained a pending
+   * list would lose them instead — hiding exactly the behaviour that makes
+   * refusing a pass safe.
+   */
+  private readonly log = new Map<string, GoogleEvent[]>()
+  private readonly tokenPosition = new Map<string, number>()
   private seq = 0
 
   constructor(calendarIds: string[]) {
     for (const id of calendarIds) {
       this.calendars.set(id, new Map())
-      this.pending.set(id, [])
+      this.log.set(id, [])
     }
   }
 
@@ -192,7 +203,7 @@ export class FakeGoogle {
   }
 
   private touch(calendarId: string, event: GoogleEvent): void {
-    this.pending.get(calendarId)?.push(event)
+    this.log.get(calendarId)?.push(event)
   }
 
   /** Simulate an event created or edited directly in Google Calendar. */
@@ -225,13 +236,18 @@ export class FakeGoogle {
     calendarId: string,
     syncToken: string | undefined,
   ): Promise<{ events: GoogleEvent[]; nextSyncToken: string }> {
+    const log = this.log.get(calendarId) ?? []
+
+    // No token means a full list: current state, not the change log.
     const events =
       syncToken === undefined
         ? [...this.store(calendarId).values()]
-        : (this.pending.get(calendarId) ?? [])
-    this.pending.set(calendarId, [])
+        : log.slice(this.tokenPosition.get(syncToken) ?? 0)
 
-    return { events, nextSyncToken: `google-${++this.seq}` }
+    const nextSyncToken = `google-${++this.seq}`
+    this.tokenPosition.set(nextSyncToken, log.length)
+
+    return { events, nextSyncToken }
   }
 
   async get(calendarId: string, eventId: string): Promise<GoogleEvent | undefined> {

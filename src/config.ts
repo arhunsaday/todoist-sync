@@ -177,6 +177,14 @@ const envSchema = credentialsSchema.extend({
   /** Append task comments to the event description. */
   SYNC_COMMENTS: booleanSchema.default(true),
 
+  /**
+   * Refuse a Google pass that would complete more than this many tasks.
+   *
+   * Deleting a calendar's events reads as "these tasks are done", so clearing
+   * one would complete every matching task. `0` disables the guard.
+   */
+  MAX_COMPLETIONS_PER_SYNC: z.coerce.number().int().min(0).default(25),
+
   RECONCILE_INTERVAL_MINUTES: z.coerce.number().int().positive().default(15),
   /** Renew Google watch channels expiring within this window. */
   WATCH_RENEW_WITHIN_HOURS: z.coerce.number().int().positive().default(48),

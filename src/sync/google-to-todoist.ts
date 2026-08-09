@@ -69,6 +69,71 @@ function expectedTodoistFingerprint(
   return todoistFingerprint(projected, notes)
 }
 
+/**
+ * The link a changed event belongs to, if any.
+ *
+ * Prefers the id in the event's own tag: it survives a lost link table, and it
+ * still resolves when the event has moved between calendars.
+ */
+function resolveLink(
+  ctx: SyncContext,
+  calendarId: string,
+  eventId: string,
+  event: GoogleEvent,
+): links.Link | undefined {
+  const byEvent = links.findByGoogleEventId(ctx.db, calendarId, eventId)
+  if (byEvent !== undefined) return byEvent
+
+  const taggedId = todoistIdOf(event)
+  return taggedId === undefined
+    ? undefined
+    : links.findByTodoistItemId(ctx.db, taggedId)
+}
+
+/**
+ * Would applying this event complete a Todoist task?
+ *
+ * Used by the circuit breaker to size up a pass before touching anything. It
+ * must agree exactly with the guards in {@link applyGoogleEvent}, hence the
+ * shared {@link resolveLink} — a breaker that counted differently from what the
+ * apply step does would either fire spuriously or fail to fire at all.
+ *
+ * Costs no API calls, so cross-calendar move artifacts (a cancellation on a
+ * calendar the link has already moved off) are excluded here for free, without
+ * the probe {@link applyGoogleEvent} performs.
+ */
+export function wouldCompleteTask(
+  ctx: SyncContext,
+  calendarId: string,
+  event: GoogleEvent,
+): boolean {
+  if (!isCancelled(event) || event.id == null) return false
+
+  const link = resolveLink(ctx, calendarId, event.id, event)
+  if (link === undefined) return false
+
+  return link.googleCalendarId === calendarId && link.googleEventId === event.id
+}
+
+/**
+ * Confirm that a cancellation really is a deletion, by probing for the event
+ * elsewhere.
+ *
+ * The cheap {@link wouldCompleteTask} cannot tell a deletion from the first
+ * half of a cross-calendar move: both are a cancellation on a calendar the link
+ * still points at. Only used once the cheap count has already raised suspicion,
+ * so the probes are paid for rarely.
+ */
+export async function isGenuineDeletion(
+  ctx: SyncContext,
+  calendarId: string,
+  event: GoogleEvent,
+): Promise<boolean> {
+  if (!wouldCompleteTask(ctx, calendarId, event) || event.id == null) return false
+
+  return (await findOnOtherCalendar(ctx, event.id, calendarId)) === undefined
+}
+
 /** Is this event id present on any other mapped calendar? */
 async function findOnOtherCalendar(
   ctx: SyncContext,
@@ -235,14 +300,7 @@ export async function applyGoogleEvent(
   const eventId = event.id
   if (eventId == null) return
 
-  // Prefer the id in the event's own tag: it survives a lost link table, and
-  // it still resolves when the event has moved between calendars.
-  const taggedId = todoistIdOf(event)
-  const link =
-    links.findByGoogleEventId(ctx.db, calendarId, eventId) ??
-    (taggedId === undefined
-      ? undefined
-      : links.findByTodoistItemId(ctx.db, taggedId))
+  const link = resolveLink(ctx, calendarId, eventId, event)
 
   if (isCancelled(event)) {
     if (link === undefined) return
