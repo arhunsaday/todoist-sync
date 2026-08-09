@@ -36,6 +36,11 @@ export function setTodoistSyncToken(db: Db, token: string): void {
   setValue(db, TODOIST_SYNC_TOKEN, token)
 }
 
+/** Next read falls back to `*`, forcing a full sync. */
+export function clearTodoistSyncToken(db: Db): void {
+  clearValue(db, TODOIST_SYNC_TOKEN)
+}
+
 /** `undefined` means "no cursor yet" — the caller performs a full list. */
 export function getGoogleSyncToken(
   db: Db,

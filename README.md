@@ -94,6 +94,43 @@ into instances under incremental sync, and a half-synced series is worse than
 none. Set `SYNC_RECURRING_FOREIGN_EVENTS=true` only once an RRULE translation
 layer exists — the flag alone does nothing.
 
+### How often things sync
+
+Both sides are cursor-based, so **an unchanged task is never looked at again.**
+The 15-minute timer is not a re-scan — it runs the same reconcile the webhooks
+do, asking each side what changed since its cursor. A task synced last month
+and untouched since costs nothing and is never revisited.
+
+Full passes happen only when a cursor is missing:
+
+- **First run after a cold start.** No stored cursor means `sync_token=*`, so
+  every existing task is imported. This is also what happens if the volume is
+  lost — run `pnpm rebuild-links` first, or you get duplicates.
+- **Google's `410 GONE`.** An expired `syncToken` clears itself and re-lists
+  that calendar in full. Self-healing, on Google's schedule.
+- **A manual resync.** See below.
+
+The gap this leaves is asymmetric: Google's side eventually re-lists itself,
+Todoist's never does. And because a failed change advances the cursor anyway —
+deliberately, so one broken task cannot stall every other change — a change
+that fails to apply is dropped and will not be retried until that task is
+edited again. That is what a manual resync is for.
+
+### Forcing a full resync
+
+Picks up tasks that predate the app, or that an earlier error skipped, without
+wiping the volume.
+
+- **`/admin/resync`** — a page with a confirm button. Needs `ADMIN_TOKEN`.
+- **`pnpm full-sync`** (`--dry-run` supported) — same thing from a shell, if
+  you have access to the machine holding the database. On a hosted deploy that
+  is the server, so the endpoint is usually easier.
+
+Both discard the Todoist cursor and every Google cursor, then reconcile. Safe
+to repeat: links are left intact, so anything already mirrored matches its
+stored fingerprint and is skipped. Only genuinely missing or drifted events
+produce writes — a resync of an already-consistent setup performs **zero**.
+
 ### Conflict policy
 
 `pullTodoist` runs before `pullGoogle`, so if the same task is edited on both
@@ -155,7 +192,14 @@ need Google authorized before the calendar ids are discoverable.
 
 ```bash
 cp .env.example .env   # credentials only; leave SYNC_MAPPINGS empty for now
+openssl rand -hex 24   # use as ADMIN_TOKEN
 ```
+
+**Set `ADMIN_TOKEN`.** `/setup` and `/admin` are guarded by HTTP basic auth
+(username `admin`) when it is present. Without it the OAuth pages are reachable
+by anyone who finds the URL, and completing that flow **replaces your stored
+token** — so a stranger could point the sync at their own calendars. `/admin`
+refuses to run at all until it is set, and the app warns about this at boot.
 
 Deploy, then:
 
@@ -280,7 +324,7 @@ convergence, rather than silently accepting drift from the downtime.
 
 ```bash
 pnpm install
-pnpm test          # 172 tests, no network
+pnpm test          # 179 tests, no network
 pnpm typecheck
 pnpm dev
 ```

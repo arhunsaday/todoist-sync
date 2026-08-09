@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "list-ids": "tsx src/scripts/list-ids.ts",
     "reconcile:once": "tsx src/scripts/reconcile-once.ts",
-    "rebuild-links": "tsx src/scripts/rebuild-links.ts"
+    "rebuild-links": "tsx src/scripts/rebuild-links.ts",
+    "full-sync": "tsx src/scripts/full-sync.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

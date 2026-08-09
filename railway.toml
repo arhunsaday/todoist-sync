@@ -11,6 +11,10 @@
 #                       https://<name>.up.railway.app (must match the OAuth
 #                       redirect URIs registered with Google and Todoist)
 #   SYNC_MAPPINGS       leave empty on the first deploy; build it at /setup/ids
+#   ADMIN_TOKEN         `openssl rand -hex 24`. Guards /setup and /admin with
+#                       basic auth. Without it the OAuth pages are open to
+#                       anyone with the URL, and completing that flow replaces
+#                       your stored token.
 #
 # RAILWAY_RUN_UID is deliberately NOT needed. Railway mounts volumes root-owned,
 # but the image's entrypoint takes ownership of the database directory and then

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createTestDb, type Db } from '../db/index.js'
 import { saveToken } from '../db/state.js'
-import { createApp } from './server.js'
+import { createApp, type AppDeps } from './server.js'
 
 const discover = vi.hoisted(() => vi.fn())
 vi.mock('../discovery.js', () => ({ discover }))
@@ -119,5 +119,42 @@ describe('/setup', () => {
     expect(html).toContain('Authorize Todoist')
     expect(html).toContain('Authorize Google Calendar')
     expect(html).toContain('SYNC_MAPPINGS')
+  })
+})
+
+// ADMIN_TOKEN is unset in the test environment, which is the unprotected
+// configuration — /admin must refuse to work at all in that state rather than
+// exposing an unauthenticated trigger for calendar writes.
+describe('/admin without ADMIN_TOKEN', () => {
+  it('refuses the confirmation page', async () => {
+    const response = await app().request('/admin/resync')
+
+    expect(response.status).toBe(503)
+    expect(await response.text()).toContain('ADMIN_TOKEN')
+  })
+
+  it('refuses to run a resync', async () => {
+    const response = await app().request('/admin/resync', { method: 'POST' })
+
+    expect(response.status).toBe(503)
+  })
+})
+
+describe('/admin/resync', () => {
+  // A GET that mutated would be fired by link scanners and browser prefetch.
+  it('only confirms on GET, never acts', async () => {
+    const resync = vi.fn()
+    const app = createApp({
+      db,
+      getEngine: () =>
+        ({ triggerResyncAll: resync }) as unknown as ReturnType<
+          AppDeps['getEngine']
+        >,
+      onAuthorized: async () => {},
+    })
+
+    await app.request('/admin/resync')
+
+    expect(resync).not.toHaveBeenCalled()
   })
 })

@@ -74,6 +74,39 @@ export class SyncEngine {
   }
 
   /**
+   * Discard both cursors and reconcile from scratch.
+   *
+   * Incremental sync only ever reports what changed, so a task that was
+   * skipped — a failed write, or a change that arrived while the mapping was
+   * wrong — is never revisited. This is the way back: dropping the cursors
+   * makes the next pass a full sync without having to wipe the database.
+   *
+   * Cheap and safe to repeat. Links are left alone, so tasks already mirrored
+   * match their stored fingerprints and are echo-skipped; only genuinely
+   * missing or drifted events produce writes.
+   */
+  async resyncAll(): Promise<void> {
+    const { db } = this.ctx
+
+    logger.info('clearing sync cursors for a full resync')
+    state.clearTodoistSyncToken(db)
+    for (const calendarId of this.ctx.routing.calendarIds) {
+      state.clearGoogleSyncToken(db, calendarId)
+    }
+
+    await this.reconcile()
+    logger.info('full resync finished')
+  }
+
+  /** Fire-and-forget variant, for the admin endpoint. */
+  triggerResyncAll(reason: string): void {
+    logger.info({ reason }, 'full resync triggered')
+    void this.resyncAll().catch((error: unknown) => {
+      logger.error({ reason, err: error }, 'full resync failed')
+    })
+  }
+
+  /**
    * Fold the response into the local cache and return every task that needs
    * re-rendering.
    *

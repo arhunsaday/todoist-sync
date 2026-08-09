@@ -150,6 +150,14 @@ const envSchema = credentialsSchema.extend({
   /** Public HTTPS origin. Google refuses to deliver push to anything else. */
   PUBLIC_URL: z.url(),
   LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
+  /**
+   * Guards `/setup` and `/admin` with HTTP basic auth (username `admin`).
+   *
+   * Without it the OAuth setup pages are open to anyone who finds the URL, and
+   * completing that flow overwrites the stored token — pointing the sync at a
+   * stranger's calendars. `/admin` refuses to work at all unless this is set.
+   */
+  ADMIN_TOKEN: z.string().min(16).optional(),
 
   SYNC_MAPPINGS: mappingsSchema,
 

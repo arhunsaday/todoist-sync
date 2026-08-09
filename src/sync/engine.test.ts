@@ -525,6 +525,64 @@ describe('switching between all-day and timed', () => {
   })
 })
 
+describe('full resync', () => {
+  // The reason this exists: incremental sync never revisits a task once the
+  // cursor has moved past it, so a change that failed to apply is lost.
+  it('picks up a task the incremental cursor has already moved past', async () => {
+    // Establish a real cursor first, so the next pass is incremental rather
+    // than the full sync a cold start performs.
+    await engine.reconcile()
+
+    // The task appears, but its change is consumed without being applied —
+    // standing in for an apply that failed while the cursor advanced anyway.
+    todoist.seed(task())
+    await todoist.sync('incremental')
+
+    await engine.reconcile()
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+
+    await engine.resyncAll()
+
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+
+  it('creates nothing extra for tasks already mirrored', async () => {
+    todoist.seed(task())
+    await engine.reconcile()
+    const after = writeCount()
+
+    await engine.resyncAll()
+
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+    expect(writeCount()).toBe(after)
+  })
+
+  it('is safe to repeat', async () => {
+    todoist.seed(task())
+    await engine.resyncAll()
+    const after = writeCount()
+
+    await engine.resyncAll()
+    await engine.resyncAll()
+
+    expect(writeCount()).toBe(after)
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+  })
+
+  it('resyncs every mapped calendar, not just the first', async () => {
+    await engine.reconcile()
+
+    todoist.seed(task())
+    todoist.seed(task({ id: 'item-2', project_id: 'proj-2' }))
+    await todoist.sync('incremental')
+
+    await engine.resyncAll()
+
+    expect(google.eventsOn(WORK)).toHaveLength(1)
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+  })
+})
+
 describe('concurrency', () => {
   it('coalesces overlapping reconciles instead of interleaving them', async () => {
     todoist.seed(task())

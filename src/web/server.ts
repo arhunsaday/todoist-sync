@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { basicAuth } from 'hono/basic-auth'
 
 import { getConfig } from '../config.js'
 import type { Db } from '../db/index.js'
@@ -110,6 +111,28 @@ function idTable(rows: NamedId[], heading: string): string {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono()
+  const adminToken = getConfig().ADMIN_TOKEN
+
+  // Basic auth rather than a token in the query string: the browser prompts
+  // once and the value never lands in history, logs, or a Referer header.
+  //
+  // Deliberately not applied to /webhooks (Todoist and Google authenticate
+  // themselves, by HMAC and channel token) or /health (the platform's
+  // healthcheck must reach it unauthenticated).
+  if (adminToken !== undefined) {
+    const guard = basicAuth({ username: 'admin', password: adminToken })
+    // '/setup/*' does not match '/setup' itself, so both are needed.
+    app.use('/setup', guard)
+    app.use('/setup/*', guard)
+    app.use('/admin', guard)
+    app.use('/admin/*', guard)
+  } else {
+    logger.warn(
+      'ADMIN_TOKEN is not set: /setup is publicly reachable, and anyone who ' +
+        'completes the OAuth flow there replaces the stored token. /admin is ' +
+        'disabled until you set it.',
+    )
+  }
 
   app.get('/health', (c) => {
     const todoist = getToken(deps.db, 'todoist') !== undefined
@@ -199,7 +222,10 @@ export function createApp(deps: AppDeps): Hono {
            <li>${step3}</li>
          </ol>
          <p>Syncing starts once all three are done. Step 3 is an environment
-            variable, so it takes a redeploy to apply.</p>`,
+            variable, so it takes a redeploy to apply.</p>
+         <hr style="margin:2rem 0;border:none;border-top:1px solid #ddd">
+         <p><a href="/admin/resync">Run a full resync</a> &mdash; picks up tasks
+            that predate the app, or that an earlier error skipped.</p>`,
       ),
     )
   })
@@ -222,6 +248,60 @@ export function createApp(deps: AppDeps): Hono {
           idTable(projects, 'Todoist projects') +
           idTable(calendars, 'Google calendars (writable only)') +
           '<p style="margin-top:2rem"><a href="/setup">Back to setup</a></p>',
+      ),
+    )
+  })
+
+  /* ---------------------------------------------------------------- */
+  /* Admin                                                             */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Force a full resync.
+   *
+   * Split across GET and POST on purpose: link scanners and browser
+   * prefetchers follow GETs, and a GET that mutated would fire on its own.
+   * The same reasoning applies to any future one-click action.
+   */
+  app.get('/admin/resync', (c) => {
+    if (adminToken === undefined) return c.text('ADMIN_TOKEN is not set', 503)
+
+    return c.html(
+      page(
+        'Full resync',
+        `<p>Discards both sync cursors and reconciles from scratch, so tasks
+            that predate the app — or that were skipped by an earlier error —
+            get picked up.</p>
+         <p>Safe to repeat: anything already mirrored matches its stored
+            fingerprint and is skipped, so only genuinely missing events are
+            created.</p>
+         <form method="post" action="/admin/resync">
+           <button type="submit" style="font-size:1rem;padding:.6rem 1.2rem">
+             Run full resync
+           </button>
+         </form>
+         <p style="margin-top:2rem"><a href="/setup">Back to setup</a></p>`,
+      ),
+    )
+  })
+
+  app.post('/admin/resync', (c) => {
+    if (adminToken === undefined) return c.text('ADMIN_TOKEN is not set', 503)
+
+    const engine = deps.getEngine()
+    if (engine === undefined) {
+      return c.text('not authorized or not mapped yet; see /setup', 409)
+    }
+
+    // A full sync can take a while, so do not hold the request open for it.
+    engine.triggerResyncAll('admin-endpoint')
+
+    return c.html(
+      page(
+        'Resync started',
+        `<p>Running in the background — watch the logs for
+            <code>full resync finished</code>.</p>
+         <p><a href="/setup">Back to setup</a></p>`,
       ),
     )
   })
