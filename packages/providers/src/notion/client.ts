@@ -235,6 +235,7 @@ export function createNotionAdapter(
       return normalize(page, ref)
     },
     async findMirror(ref, key) {
+      await validate(ref)
       const m = mapping()
       if (!m.mirrorKey)
         throw new AppError(

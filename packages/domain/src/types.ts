@@ -43,6 +43,7 @@ export interface Link {
   baseline: TaskFields
   sourceRevision: string
   destinationRevision: string
+  removedByRule?: 'completion' | 'undated'
   detached?: boolean
 }
 export interface Operation {

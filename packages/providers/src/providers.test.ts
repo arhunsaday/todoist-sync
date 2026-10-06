@@ -202,3 +202,50 @@ it('recreates an app-removed Google mirror with a fresh stable event id', async 
   expect(result.metadata.accordKey).toBe('original-group')
   expect(result.id).not.toBe('removed-event')
 })
+
+it('blocks Notion mirror recovery when a mapped date property was removed', async () => {
+  const rule = makeRule('u')
+  rule.notionMapping = {
+    title: 't',
+    date: 'd',
+    status: 's',
+    mirrorKey: 'k',
+    doneValues: ['Done'],
+    openValue: 'Open',
+    doneValue: 'Done',
+  }
+  const fetcher: typeof fetch = async (input) => {
+    if (String(input).endsWith('/query'))
+      return Response.json({
+        results: [
+          {
+            id: 'p',
+            last_edited_time: 'v1',
+            properties: {
+              Name: { id: 't', type: 'title', title: [{ plain_text: 'Task' }] },
+              Status: { id: 's', type: 'status', status: { name: 'Open' } },
+            },
+          },
+        ],
+      })
+    return Response.json({
+      id: 'ds',
+      title: [],
+      properties: {
+        Name: { id: 't', type: 'title' },
+        Status: {
+          id: 's',
+          type: 'status',
+          status: { options: [{ name: 'Open' }, { name: 'Done' }] },
+        },
+        Key: { id: 'k', type: 'rich_text' },
+      },
+    })
+  }
+  await expect(
+    createNotionAdapter('n', async () => 'token', rule, fetcher).findMirror(
+      { provider: 'notion', connectionId: 'n', resourceId: 'ds' },
+      'key',
+    ),
+  ).rejects.toMatchObject({ code: 'NOTION_MAPPING' })
+})

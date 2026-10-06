@@ -42,7 +42,7 @@ export function planPair(
     (destination?.recurring && destination.ref.provider === 'google')
   )
     return [decision('skip', rule.destination, {}, 'Les séries Google ne sont pas converties.')]
-  if (destination?.deleted && link && (link.baseline.completed || !link.baseline.schedule)) {
+  if (destination?.deleted && link?.removedByRule && rule.destination.provider === 'google') {
     if (source.fields.schedule && (!source.fields.completed || rule.options.completion === 'mark'))
       return [
         decision(

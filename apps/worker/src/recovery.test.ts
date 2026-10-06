@@ -6,6 +6,7 @@ import { makeRule, type Entity, type ProviderAdapter, AppError } from '@accord/d
 import { createTestSession } from './test/session'
 import { planRule, persistPlan } from './sync/reconcile'
 import { executeOperation } from './sync/execute'
+import { getLink } from './storage/db'
 beforeAll(async () => {
   await env.DB.exec(sqlAuth)
   await env.DB.exec(sqlDomain)
@@ -120,6 +121,34 @@ it('retains failed writes after the cursor advances and recovers a mirror withou
         .first<{ status: string }>()
     )?.status,
   ).toBe('done')
+  rule.options.completion = 'remove'
+  await env.DB.prepare('UPDATE rules SET payload=? WHERE id=?')
+    .bind(JSON.stringify(rule), rule.id)
+    .run()
+  source = { ...source, revision: '2', fields: { ...source.fields, completed: true } }
+  const completePlan = await planRule(env, 'u', rule, false, adapters)
+  await persistPlan(env, 'u', rule, completePlan)
+  const completeOp = await env.DB.prepare(
+    "SELECT id FROM operations WHERE rule_id=? AND status='pending'",
+  )
+    .bind(rule.id)
+    .first<{ id: string }>()
+  expect(completeOp).not.toBeNull()
+  await executeOperation(env, 'u', completeOp!.id, adapters)
+  expect((await getLink(env.DB, 'u', rule.id, source.id))?.removedByRule).toBe('completion')
+  mirror = { ...mirror!, deleted: true }
+  source = { ...source, revision: '3', fields: { ...source.fields, completed: false } }
+  const reopenPlan = await planRule(env, 'u', rule, false, adapters)
+  await persistPlan(env, 'u', rule, reopenPlan)
+  const reopenOp = await env.DB.prepare(
+    "SELECT id FROM operations WHERE rule_id=? AND status='pending'",
+  )
+    .bind(rule.id)
+    .first<{ id: string }>()
+  expect(reopenOp).not.toBeNull()
+  await executeOperation(env, 'u', reopenOp!.id, adapters)
+  expect((await getLink(env.DB, 'u', rule.id, source.id))?.removedByRule).toBeUndefined()
+  expect(mirror!.deleted).toBe(false)
 })
 it('refuses a queued operation after trial expiry', async () => {
   await env.DB.prepare('UPDATE customers SET trial_ends_at=0 WHERE user_id=?').bind('u').run()

@@ -134,6 +134,7 @@ it('recreates an app-removed calendar mirror when a task is reopened', () => {
     ruleId: rule.id,
     sourceId: 'task',
     destinationId: 'event',
+    removedByRule: 'completion' as const,
     baseline: { ...fields, completed: true },
     sourceRevision: '1',
     destinationRevision: '1',
@@ -158,9 +159,40 @@ it('recreates a mirror when a previously undated task receives a date', () => {
     ruleId: rule.id,
     sourceId: 'task',
     destinationId: 'event',
+    removedByRule: 'undated' as const,
     baseline: { ...fields, schedule: null },
     sourceRevision: '1',
     destinationRevision: '1',
   }
   expect(planPair(rule, source, destination, link)[0]?.kind).toBe('write')
+})
+
+it('unlinks a manually deleted completed mirror when completion marks events', () => {
+  const rule = { ...makeRule('u'), source: a, destination: b }
+  rule.options.completion = 'mark'
+  const fields = {
+    ...base,
+    completed: true,
+    schedule: { kind: 'date' as const, date: '2026-10-06', days: 1 },
+  }
+  const source = {
+    id: 'task',
+    ref: a,
+    fields,
+    revision: '2',
+    deleted: false,
+    recurring: false,
+    metadata: {},
+  }
+  const destination = { ...source, id: 'event', ref: b, deleted: true }
+  const link = {
+    groupId: 'g',
+    ruleId: rule.id,
+    sourceId: 'task',
+    destinationId: 'event',
+    baseline: fields,
+    sourceRevision: '1',
+    destinationRevision: '1',
+  }
+  expect(planPair(rule, source, destination, link)[0]?.kind).toBe('unlink')
 })

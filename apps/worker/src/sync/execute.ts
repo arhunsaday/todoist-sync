@@ -161,6 +161,7 @@ export async function executeOperation(env: Env, userId: string, id: string, ada
       await finish(env, op)
       return
     }
+    let removedByRule = link?.removedByRule
     for (const decision of decisions) {
       if (decision.kind === 'unlink') {
         if (
@@ -213,7 +214,15 @@ export async function executeOperation(env: Env, userId: string, id: string, ada
         },
       )
       if (towardSource) source = result
-      else destination = result
+      else {
+        destination = result
+        if (rule.destination.provider === 'google')
+          removedByRule = !result.fields.schedule
+            ? 'undated'
+            : result.fields.completed && rule.options.completion === 'remove'
+              ? 'completion'
+              : undefined
+      }
     }
     if (source && destination) {
       if (
@@ -238,6 +247,7 @@ export async function executeOperation(env: Env, userId: string, id: string, ada
         baseline: source.fields,
         sourceRevision: source.revision,
         destinationRevision: destination.revision,
+        removedByRule,
       })
     }
     await finish(env, op)
