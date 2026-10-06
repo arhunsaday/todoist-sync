@@ -1,0 +1,25 @@
+{
+  "name": "@accord/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:local": "wrangler d1 migrations apply accord-local --local --persist-to ../../.wrangler/state"
+  },
+  "dependencies": {
+    "@accord/domain": "workspace:*",
+    "@accord/providers": "workspace:*",
+    "hono": "^4.13.1",
+    "better-auth": "latest",
+    "drizzle-orm": "latest",
+    "stripe": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "latest",
+    "@cloudflare/workers-types": "latest",
+    "@cloudflare/vitest-pool-workers": "latest",
+    "drizzle-kit": "latest"
+  }
+}

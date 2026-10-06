@@ -1,0 +1,18 @@
+CREATE TABLE trial_claims (identity_hash TEXT PRIMARY KEY, first_claimed_at INTEGER NOT NULL);
+CREATE TABLE customers (user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE, trial_ends_at INTEGER NOT NULL, stripe_customer_id TEXT UNIQUE, subscription_json TEXT, deleting INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE connections (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, provider TEXT NOT NULL, name TEXT NOT NULL, external_user_id TEXT NOT NULL, status TEXT NOT NULL, encrypted_tokens TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(user_id,provider));
+CREATE INDEX connections_external ON connections(provider,external_user_id);
+CREATE TABLE oauth_attempts (state TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, provider TEXT NOT NULL, verifier TEXT, expires_at INTEGER NOT NULL);
+CREATE TABLE rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, revision INTEGER NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX rules_user ON rules(user_id,status);
+CREATE TABLE rule_versions (rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE, user_id TEXT NOT NULL, revision INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(rule_id,revision));
+CREATE TABLE entity_links (user_id TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE, group_id TEXT NOT NULL, source_id TEXT NOT NULL, destination_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(user_id,rule_id,source_id), UNIQUE(user_id,rule_id,destination_id));
+CREATE TABLE sync_cursors (user_id TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE, side TEXT NOT NULL, cursor TEXT, PRIMARY KEY(user_id,rule_id,side));
+CREATE TABLE operations (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE, status TEXT NOT NULL, next_attempt_at INTEGER NOT NULL, attempts INTEGER NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX operations_due ON operations(user_id,status,next_attempt_at);
+CREATE TABLE activity (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, rule_id TEXT REFERENCES rules(id) ON DELETE CASCADE, source_id TEXT, status TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX activity_user ON activity(user_id,created_at);
+CREATE TABLE webhook_receipts (provider TEXT NOT NULL, receipt_id TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(provider,receipt_id));
+CREATE TABLE previews (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE, revision INTEGER NOT NULL, expires_at INTEGER NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE watch_channels (channel_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, connection_id TEXT NOT NULL REFERENCES connections(id) ON DELETE CASCADE, resource_id TEXT NOT NULL, calendar_id TEXT NOT NULL, token TEXT NOT NULL, expiration INTEGER NOT NULL);
+CREATE TABLE runs (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, started_at INTEGER NOT NULL, ended_at INTEGER, status TEXT NOT NULL);

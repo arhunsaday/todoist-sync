@@ -1,0 +1,17 @@
+{
+  "name": "@accord/providers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@accord/domain": "workspace:*",
+    "zod": "^4.4.3",
+    "@js-temporal/polyfill": "^0.5.1"
+  },
+  "devDependencies": {},
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
