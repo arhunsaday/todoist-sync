@@ -1,0 +1,19 @@
+{
+  "date": "2026-10-07T06:49:02.492Z",
+  "mode": "isolated-local-D1",
+  "migrations": 3,
+  "tables": 20,
+  "rows": 11,
+  "archiveSha256": "77ddfb892637deb00cc34bd9df42b705914b38ccf29d4616136d0bc1f79c28ba",
+  "checks": [
+    "D1 export/import",
+    "AES-GCM + gzip roundtrip",
+    "incorrect key rejected",
+    "tampering rejected",
+    "all table rows identical",
+    "provider token decrypted",
+    "SQLite integrity",
+    "foreign keys"
+  ],
+  "remoteTested": false
+}

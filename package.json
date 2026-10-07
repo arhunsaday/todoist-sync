@@ -23,7 +23,10 @@
     "test:saas": "vitest run --config vitest.saas.config.ts",
     "test:worker": "pnpm --filter @accord/worker test",
     "test:browser": "playwright test",
-    "db:local": "pnpm --filter @accord/worker db:local"
+    "db:local": "pnpm --filter @accord/worker db:local",
+    "setup:service": "bash scripts/setup-service.sh",
+    "backup:drill": "node scripts/backup.mjs drill --report=docs/backup-validation.json",
+    "test:operations": "node --test scripts/operations.test.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",

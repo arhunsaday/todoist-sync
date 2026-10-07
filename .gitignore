@@ -17,3 +17,8 @@ data/
 .superpowers/
 playwright-report/
 test-results/
+
+# Operator setup and encrypted backup archives
+apps/worker/wrangler.production.json
+backups/
+*.accord-backup

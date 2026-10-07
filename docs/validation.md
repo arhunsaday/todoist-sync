@@ -1,12 +1,12 @@
 # Validation locale
 
-Vérifications réalisées sur le worktree `codex/accord-product` le 6 octobre 2026.
+Vérifications réalisées sur le worktree `codex/accord-product` les 6 et 7 octobre 2026.
 
 | Vérification                                                                               | Résultat                                     |
 | ------------------------------------------------------------------------------------------ | -------------------------------------------- |
 | Service historique : `pnpm test`                                                           | 208 tests réussis                            |
 | Domaine et adaptateurs : `pnpm test:saas`                                                  | 26 tests réussis                             |
-| Workers/D1/Durable Objects : `pnpm test:worker`                                            | 17 tests réussis                             |
+| Workers/D1/Durable Objects : `pnpm test:worker`                                            | 19 tests réussis                             |
 | Navigateurs : `pnpm test:browser`                                                          | 4 tests réussis, desktop et mobile           |
 | TypeScript historique et SaaS                                                              | Vérifications réussies                       |
 | Builds historique et SaaS                                                                  | Réussis                                      |
@@ -70,3 +70,23 @@ les pages légales. Ne pas ouvrir les paiements réels avant cette validation.
 Le SDK Stripe émet des avertissements de sourcemaps manquantes pendant les tests
 Workers. Le build contient aussi un avertissement d’annotation du paquet Zod.
 Ce sont des avertissements des dépendances ; les commandes terminent avec succès.
+
+## Préparation de mise en service — 7 octobre 2026
+
+- Assistant bash : syntaxe vérifiée ; non exécuté avec saisie de comptes réels.
+- Génération de configuration : 2 tests opérateur avec fichiers temporaires ;
+  séparation secrets/configuration publique, permissions privées, refus de paramètres
+  invalides et clés Stripe live pendant la préparation.
+- Blocage Checkout live tant que l’éditeur n’a pas approuvé les informations légales.
+  Les pages restent des versions préparatoires en l’absence d’identité de l’éditeur.
+- Exercice D1 : 3 migrations, 20 tables et 11 lignes de fixtures exportées puis
+  restaurées à l’identique. Chiffrement, rejet de clé incorrecte et archive altérée,
+  jeton restauré, intégrité SQLite et clés étrangères vérifiés.
+  Rapport : [backup-validation.json](backup-validation.json).
+- Aucun déploiement distant, OAuth réel, paiement live, restauration Time Travel
+  distante ni programmation des exports quotidiens n’a été effectué.
+
+Les dernières vérifications SaaS passent : 26 tests domaine/fournisseurs,
+19 tests Worker, 2 tests opérateur, 4 tests navigateur, TypeScript et build.
+Les trois pages légales ont aussi été vérifiées sur ordinateur et mobile :
+notice de préparation visible, aucun débordement horizontal ni erreur JavaScript.

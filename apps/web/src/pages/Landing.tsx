@@ -300,6 +300,7 @@ export function Landing() {
         <Brand />
         <span>Un peu moins de bruit. Un peu plus d’accord.</span>
         <nav>
+          <Link to="/legal">Mentions légales</Link>
           <Link to="/privacy">Confidentialité</Link>
           <Link to="/terms">Conditions</Link>
         </nav>

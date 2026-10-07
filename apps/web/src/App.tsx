@@ -16,6 +16,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<SignIn />} />
+        <Route path="/legal" element={<Legal kind="notice" />} />
         <Route path="/privacy" element={<Legal kind="privacy" />} />
         <Route path="/terms" element={<Legal kind="terms" />} />
         {['demo', 'app'].map((path) => (

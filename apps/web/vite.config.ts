@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     tailwind(),
     cloudflare({
-      configPath: '../worker/wrangler.jsonc',
+      configPath: process.env.ACCORD_WRANGLER_CONFIG ?? '../worker/wrangler.jsonc',
       persistState: { path: '../../.wrangler/state' },
     }),
   ],

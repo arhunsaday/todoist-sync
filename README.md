@@ -77,6 +77,14 @@ Le service personnel conserve ses commandes `pnpm dev`, `pnpm test`,
 
 ## Mise en service
 
+Un assistant guidé prépare OAuth, Stripe test et Cloudflare : `pnpm setup:service`.
+Il ne déploie rien automatiquement. La configuration privée reste hors Git.
+L’exercice `pnpm backup:drill` vérifie export/restauration de fixtures D1 isolées.
+
+- [Assistant et lancement](docs/launch.md)
+- [Sauvegarder et restaurer](docs/backup-restore.md)
+- [Informations légales à compléter](docs/legal/publication.md)
+
 - [Configurer et déployer](docs/deployment.md)
 - [Utiliser les règles](docs/user-guide.md)
 - [Migrer le service personnel](docs/migration.md)

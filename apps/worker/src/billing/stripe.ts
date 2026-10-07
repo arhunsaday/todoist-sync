@@ -1,5 +1,5 @@
 import Stripe from 'stripe'
-import { AppError } from '@accord/domain'
+import { AppError, legalReady } from '@accord/domain'
 import type { Env } from '../env'
 import { billing } from '../storage/db'
 export function stripeFor(env: Env) {
@@ -8,6 +8,12 @@ export function stripeFor(env: Env) {
   return new Stripe(env.STRIPE_SECRET_KEY, { httpClient: Stripe.createFetchHttpClient() })
 }
 export async function checkout(env: Env, userId: string) {
+  if (/^(sk|rk)_live_/.test(env.STRIPE_SECRET_KEY ?? '') && !legalReady())
+    throw new AppError(
+      'LAUNCH_NOT_READY',
+      'Les informations légales doivent être finalisées avant la vente.',
+      503,
+    )
   if (!env.STRIPE_PRICE_ID)
     throw new AppError('CONFIGURATION', 'L’abonnement n’est pas configuré.', 503)
   const stripe = stripeFor(env),
@@ -53,6 +59,7 @@ export async function checkout(env: Env, userId: string) {
       success_url: env.PUBLIC_URL + '/app/billing?checkout=success',
       cancel_url: env.PUBLIC_URL + '/app/billing',
       subscription_data: { metadata: { accordUserId: userId } },
+      consent_collection: { terms_of_service: 'required' },
     },
     { idempotencyKey: 'accord-checkout-' + userId + '-' + Math.floor(Date.now() / 1800000) },
   )

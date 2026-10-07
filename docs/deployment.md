@@ -1,5 +1,10 @@
 # Configurer Accord
 
+Pour la procédure guidée avec génération de configuration séparée, commencer par
+[launch.md](launch.md) et `pnpm setup:service`. Pour la récupération, suivre
+[backup-restore.md](backup-restore.md). Les commandes ci-dessous décrivent aussi
+la configuration manuelle.
+
 La configuration ci-dessous concerne le propriétaire du service. Les utilisateurs
 se connectent ensuite depuis le navigateur ; ils n’installent rien et ne créent
 pas d’applications OAuth.

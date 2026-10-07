@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test'
 import { expect, it } from 'vitest'
 import Stripe from 'stripe'
 import { sealToken, openToken, verifyHmac } from './connections/crypto'
-import { receiveStripe, stripeFor } from './billing/stripe'
+import { receiveStripe, stripeFor, checkout } from './billing/stripe'
 it('binds encrypted tokens to the customer and provider', async () => {
   const key = btoa('01234567890123456789012345678901')
   const cipher = await sealToken({ access_token: 'private' }, key, 'v1', 'alice:t:todoist')
@@ -61,4 +61,22 @@ it('accepts a freshly signed Stripe event', async () => {
       }),
     ),
   ).resolves.toEqual({ ok: true })
+})
+
+it('blocks live checkout before legal publication without accessing Stripe or D1', async () => {
+  await expect(
+    checkout(
+      { ...env, STRIPE_SECRET_KEY: 'sk_live_fixture', STRIPE_PRICE_ID: 'price_fixture' },
+      'u',
+    ),
+  ).rejects.toMatchObject({ code: 'LAUNCH_NOT_READY' })
+})
+
+it('also blocks restricted Stripe live keys before legal approval', async () => {
+  await expect(
+    checkout(
+      { ...env, STRIPE_SECRET_KEY: 'rk_live_fixture', STRIPE_PRICE_ID: 'price_fixture' },
+      'u',
+    ),
+  ).rejects.toMatchObject({ code: 'LAUNCH_NOT_READY' })
 })
