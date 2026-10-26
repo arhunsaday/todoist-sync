@@ -3,3 +3,8 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
+
+# Match the Docker build: Corepack fetches a recent pnpm there, which refuses
+# packages published less than a day ago. Resolving under the same rule here
+# keeps a fresh lockfile from failing the image build.
+minimumReleaseAge: 1440
