@@ -247,8 +247,7 @@ Move the database and nothing is re-synced:
 
 Starting from an empty disk instead also works: connect both accounts again,
 save the pairs, then run `pnpm rebuild-links` on the server to re-attach the
-existing events instead of duplicating them (see the README's Recovery
-section).
+existing events instead of duplicating them (see [Recovery](how-it-works.md#recovery-after-losing-the-database)).
 
 ### Backups
 
