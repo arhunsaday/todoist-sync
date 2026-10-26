@@ -44,6 +44,8 @@ if (Buffer.from(values.TOKEN_ENCRYPTION_KEY, 'base64').length !== 32)
 if (values.BETTER_AUTH_SECRET.length < 32) throw new Error('BETTER_AUTH_SECRET is too short')
 if (!values.STRIPE_SECRET_KEY.startsWith('sk_test_'))
   throw new Error('Preparation uses Stripe test keys; enable live separately after acceptance')
+if (!values.STRIPE_PRICE_ID.startsWith('price_'))
+  throw new Error('STRIPE_PRICE_ID must be a Price id (price_...), not a Product id (prod_...)')
 const amount = values.STRIPE_PRICE_AMOUNT ?? '6'
 if (!Number.isFinite(Number(amount)) || Number(amount) <= 0)
   throw new Error('Invalid monthly price')
@@ -69,7 +71,7 @@ const secrets = Object.fromEntries(
     .filter((key) => !['PUBLIC_URL', 'D1_DATABASE_ID', 'D1_DATABASE_NAME'].includes(key))
     .map((key) => [key, values[key]]),
 )
-for (const key of ['NOTION_WEBHOOK_SECRET', 'NOTION_HANDSHAKE_KEY'])
+for (const key of ['NOTION_WEBHOOK_SECRET', 'NOTION_HANDSHAKE_KEY', 'OWNER_EMAILS'])
   if (values[key]) secrets[key] = values[key]
 await writeFile(
   new URL('apps/worker/.dev.vars.upload.json', root),

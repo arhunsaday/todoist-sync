@@ -76,9 +76,19 @@ test('rejects insecure origin, placeholder D1 and live Stripe during preparation
       { D1_DATABASE_ID: '00000000-0000-0000-0000-000000000000' },
       { STRIPE_SECRET_KEY: 'sk_live_fixture' },
       { TOKEN_ENCRYPTION_KEY: 'invalid' },
+      { STRIPE_PRICE_ID: 'prod_fixture' },
     ]) {
       const result = await generate(root, worker, { ...values, ...changes })
       assert.notEqual(result.status, 0)
       assert.equal(result.stdout.includes(values.GOOGLE_CLIENT_SECRET), false)
     }
+  }))
+test('uploads owner emails as a secret when set', async () =>
+  fixture(async (root, worker) => {
+    const result = await generate(root, worker, { ...values, OWNER_EMAILS: 'me@example.invalid' })
+    assert.equal(result.status, 0, result.stderr)
+    const upload = JSON.parse(await readFile(join(worker, '.dev.vars.upload.json'), 'utf8'))
+    assert.equal(upload.OWNER_EMAILS, 'me@example.invalid')
+    const config = await readFile(join(worker, 'wrangler.production.json'), 'utf8')
+    assert.equal(config.includes('me@example.invalid'), false)
   }))

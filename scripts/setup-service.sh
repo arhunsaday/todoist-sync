@@ -189,6 +189,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 umask 077
 ENV_FILE="$ROOT_DIR/apps/worker/.dev.vars.production"
+# The last stage runs scripts/configure-production.mjs, which needs dotenv:
+# fail now rather than after every value has been typed in.
+if [[ ! -d "$ROOT_DIR/node_modules/dotenv" ]]; then
+  warn "${RED}Dépendances absentes. Lancer d’abord : corepack pnpm install --frozen-lockfile${RESET}"
+  exit 1
+fi
 required_secret() {
   ask_secret "$1" "$2"
   [[ -n "${!1}" ]] || { warn "${RED}Valeur requise : $1${RESET}"; exit 1; }
@@ -221,6 +227,9 @@ for KEY_NAME in BETTER_AUTH_SECRET TOKEN_ENCRYPTION_KEY; do
   write_env "$KEY_NAME" "$KEY_VALUE"
 done
 note "Conserver ces clés dans un coffre distinct des sauvegardes D1."
+step "Comptes propriétaires : synchronisent sans essai ni abonnement Stripe."
+ask OWNER_EMAILS "Emails Google propriétaires, séparés par des virgules (facultatif) :"
+[[ -n "$OWNER_EMAILS" ]] && write_env OWNER_EMAILS "$OWNER_EMAILS"
 pause
 stage "Google · identité et calendrier"
 open_url "https://console.cloud.google.com/apis/credentials"
@@ -254,6 +263,7 @@ step "Utiliser une sandbox/mode TEST. Ne pas copier de clé live."
 required_secret STRIPE_SECRET_KEY "Clé secrète TEST sk_test_... :"
 open_url "https://dashboard.stripe.com/test/products"
 step "Créer Accord et un Price mensuel, même montant/devise que l’interface."
+note "L’identifiant du Price commence par price_, pas prod_ : il est dans la section Tarifs du produit."
 required_value STRIPE_PRICE_ID "Identifiant du Price price_... :"
 ask STRIPE_PRICE_AMOUNT "Montant mensuel (6 par défaut) :"
 write_env STRIPE_PRICE_AMOUNT "${STRIPE_PRICE_AMOUNT:-6}"
