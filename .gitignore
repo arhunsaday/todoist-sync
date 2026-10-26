@@ -10,15 +10,3 @@ data/
 *.db-journal
 *.db-wal
 *.db-shm
-
-.dev.vars*
-!.dev.vars.example
-.wrangler/
-.superpowers/
-playwright-report/
-test-results/
-
-# Operator setup and encrypted backup archives
-apps/worker/wrangler.production.json
-backups/
-*.accord-backup
