@@ -283,8 +283,8 @@ export function createApp(deps: AppDeps): Hono {
   /* ---------------------------------------------------------------- */
 
   if (deps.staticRoot !== undefined) {
-    app.use('/assets/*', serveStatic({ root: deps.staticRoot }))
-    // Single-page app: every other GET renders the shell.
+    app.get('*', serveStatic({ root: deps.staticRoot }))
+    // Single-page app: any other GET renders the shell.
     app.get('*', serveStatic({ root: deps.staticRoot, path: 'index.html' }))
   }
 
