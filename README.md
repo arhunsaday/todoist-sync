@@ -144,10 +144,10 @@ edited again. That is what a manual resync is for.
 Picks up tasks that predate the app, or that an earlier error skipped, without
 wiping the volume.
 
-- **`/admin/resync`** — a page with a confirm button. Needs `ADMIN_TOKEN`.
+- **Resynchroniser** in the UI — behind a confirmation. Needs `ADMIN_TOKEN`.
 - **`pnpm full-sync`** (`--dry-run` supported) — same thing from a shell, if
   you have access to the machine holding the database. On a hosted deploy that
-  is the server, so the endpoint is usually easier.
+  is the server, so the button is usually easier.
 
 Both discard the Todoist cursor and every Google cursor, then reconcile. Safe
 to repeat: links are left intact, so anything already mirrored matches its
@@ -185,7 +185,7 @@ are neither applied nor lost. Nothing is half-done.
 
 The refusal is logged at `error` and the calendar appears in
 `blockedCalendars` on `/health`, with `status: "blocked"`. To recover: restore
-the calendar, or raise the limit and let the pass through. Because the cursor
+the calendar, or raise the limit (UI → Options) and let the pass through. Because the cursor
 never moved, the same changes are still waiting.
 
 Two details that make it usable rather than annoying:
@@ -252,56 +252,47 @@ The consent screen now lives under **Google Auth Platform**, not the old
 compares it as an exact string. A work account may block creating OAuth
 clients, in which case use a personal Cloud project.
 
-### 3. Deploy, then authorize, then map
-
-**`SYNC_MAPPINGS` is deliberately optional at boot**, because the setup would
-otherwise deadlock: you need the running server to authorize Google, and you
-need Google authorized before the calendar ids are discoverable.
+### 3. Deploy, then connect, then pair
 
 ```bash
-cp .env.example .env   # credentials only; leave SYNC_MAPPINGS empty for now
+cp .env.example .env   # credentials only
 openssl rand -hex 24   # use as ADMIN_TOKEN
 ```
 
-**Set `ADMIN_TOKEN`.** `/setup` and `/admin` are guarded by HTTP basic auth
-(username `admin`) when it is present. Without it the OAuth pages are reachable
-by anyone who finds the URL, and completing that flow **replaces your stored
-token** — so a stranger could point the sync at their own calendars. `/admin`
-refuses to run at all until it is set, and the app warns about this at boot.
+**Set `ADMIN_TOKEN`.** Everything except `/health` and the two webhooks sits
+behind HTTP basic auth (username `admin`) when it is present. Without it the
+UI is reachable by anyone who finds the URL, completing the OAuth flow there
+**replaces your stored token** — so a stranger could point the sync at their
+own calendars — and saving settings or resyncing is refused.
 
-Deploy, then:
+Deploy (see [docs/deployment.md](docs/deployment.md) for each host), then open
+the app's URL:
 
-1. Visit **`/setup`** and authorize both providers.
-2. Visit **`/setup/ids`**. It lists every Todoist project and writable Google
-   calendar, with a picker that assembles the `SYNC_MAPPINGS` line for you —
-   worth using rather than copying `c_1a2b…@group.calendar.google.com` by eye.
-3. Set `SYNC_MAPPINGS` in your environment and redeploy.
+1. **Vue d'ensemble** → connect Todoist and Google Agenda.
+2. **Paires** → pick a calendar for each project to sync, and save. Syncing
+   starts right away and imports every task of the new projects; no redeploy.
+3. **Options** → prefixes, comments, default duration, circuit breaker.
 
-`/setup` shows all three steps and which are done. Until all three are, the
-app boots, serves the setup pages, and syncs nothing — `/health` reports
-`awaiting-setup` and returns `200` so the platform does not restart-loop it.
+Until both accounts are connected and one pair exists, the app serves the UI
+and syncs nothing — `/health` reports `awaiting-setup` and returns `200` so the
+platform does not restart-loop it.
 
-`pnpm list-ids` prints the same lists from a terminal, but only works where the
-OAuth tokens are — on a hosted deploy that is the server, so use `/setup/ids`.
+#### Where settings live
 
-Both ids are also readable from the two UIs, if you would rather not wait for
-the deploy:
+Pairs and options saved in the UI are stored in the database and **override**
+the matching environment variables (`SYNC_MAPPINGS`, `PRIORITY_PREFIXES`,
+`LABEL_PREFIXES`, `SYNC_COMMENTS`, `DEFAULT_EVENT_DURATION_MINUTES`,
+`SYNC_FOREIGN_EVENTS`, `MAX_COMPLETIONS_PER_SYNC`). The variables still work and
+give the starting values, so an existing deployment keeps its mapping on the
+first boot and only stops reading the variable once you save from the UI.
 
-- **Google calendar id** — Calendar → Settings → pick the calendar under
-  "Settings for my calendars" → **Integrate calendar** → *Calendar ID*. Your
-  own calendar is your email address; the rest look like
-  `c_1a2b…@group.calendar.google.com`.
-- **Todoist project id** — open the project on the web; the id is the trailing
-  segment of the URL, `app.todoist.com/app/project/<slug>-<id>`, e.g.
-  `6Jf837c4fJQw5Hg8`. In API v1 this is the same id the API uses, but
-  `/setup/ids` is worth a glance to confirm.
+Changing a pair applies without a restart: the new mapping takes effect at
+the next pass (never in the middle of one), push channels follow, and a full
+resync imports the tasks of newly paired projects. Unpairing a project leaves
+its existing events where they are.
 
-Each entry needs **both** halves separated by a colon. A bare project id is
-rejected at boot with `expected "todoistProjectId:googleCalendarId"`:
-
-```
-SYNC_MAPPINGS=6Jf837c4fJQw5Hg8:c_1a2b@group.calendar.google.com,6Jf837qfR3px2795:me@gmail.com
-```
+`pnpm list-ids` prints projects and calendars from a terminal, but only works
+where the OAuth tokens are — on a hosted deploy that is the server.
 
 ### 4. Dry run before the first live sync
 
@@ -316,63 +307,10 @@ first hosted reconcile is the live one.
 
 ## Deployment
 
-Any host works. Requirements:
-
-- **HTTPS with a valid CA certificate** — Google refuses to deliver push
-  notifications to anything else.
-- **Persistent storage** mounted at the `DATABASE_PATH` directory (`/data` in
-  the image).
-- `PUBLIC_URL` set to the public origin.
-
-```bash
-docker build -t t2gc . && docker run -p 3000:3000 -v t2gc-data:/data --env-file .env t2gc
-```
-
-### Railway
-
-`railway.toml` covers the build and deploy settings. What it cannot express:
-
-**Attach a volume** — Service → Settings → Volumes, mount path `/data`.
-Without it the link table is wiped on every redeploy and the next sync
-duplicates every event (`pnpm rebuild-links` recovers, but avoid needing it).
-The Dockerfile deliberately has no `VOLUME` instruction; Railway rejects builds
-that use one.
-
-Then set these service variables:
-
-```
-DATABASE_PATH=/data/sync.db
-PUBLIC_URL=https://<name>.up.railway.app
-SYNC_MAPPINGS=            # empty on first deploy; build it at /setup/ids
-```
-
-`DATABASE_PATH` **must be absolute and inside the mount.** Copying the
-relative local default out of `.env` is the most likely way to break this: it
-resolves to `/app/data`, which is not writable, and would not survive a
-redeploy even if it were. Railway injects `PORT` itself.
-
-`RAILWAY_RUN_UID=0` is **not** needed, despite being Railway's documented
-answer to volume permissions. Railway mounts volumes root-owned after the image
-is built, so no build-time `chown` can help — but the entrypoint takes
-ownership of the database directory at startup and then drops to the
-unprivileged `node` user, so the process never runs as root. Verified against a
-`root:root` mode-`700` mount.
-
-### Webhook URL requirements
-
-HTTPS with a certificate from a trusted CA, matching the hostname. Self-signed,
-revoked, or mismatched certificates are all rejected silently — Google simply
-stops delivering.
-
-Domain verification is **not** required. Google [removed that
-requirement](https://support.google.com/googleapi/answer/7072069): *"Domain
-verification in the API Console is no longer required to make push
-notifications work with your domains."* A platform-issued subdomain such as
-`*.up.railway.app` works without a custom domain.
-
-If `events.watch` fails anyway, it is not fatal. Registration failures are
-logged and the app falls back to polling on `RECONCILE_INTERVAL_MINUTES` — you
-lose push latency, not correctness.
+One container, one SQLite file. Any host that runs a Docker image with a
+persistent disk and public HTTPS works: Railway, a VPS, Fly.io, Render,
+Coolify… Step-by-step instructions for each are in
+**[docs/deployment.md](docs/deployment.md)**.
 
 ## Recovery
 
@@ -392,10 +330,15 @@ convergence, rather than silently accepting drift from the downtime.
 
 ```bash
 pnpm install
-pnpm test          # 208 tests, no network
-pnpm typecheck
-pnpm dev
+pnpm test          # no network
+pnpm typecheck     # server and UI
+pnpm dev           # API on :3000
+pnpm dev:web       # UI on :5173, proxies /api to :3000
 ```
+
+The UI lives in `web/` (React, Vite, Tailwind, shadcn/ui components in
+`web/src/components/ui`). `pnpm build` compiles the server to `dist/` and the
+UI to `dist/public/`, which the server serves itself.
 
 Local webhook delivery needs a public URL — `cloudflared tunnel --url
 http://localhost:3000`, then set `PUBLIC_URL` to the tunnel origin.

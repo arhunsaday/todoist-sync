@@ -10,8 +10,8 @@
 #   PUBLIC_URL          the service's public origin, e.g.
 #                       https://<name>.up.railway.app (must match the OAuth
 #                       redirect URIs registered with Google and Todoist)
-#   SYNC_MAPPINGS       leave empty on the first deploy; build it at /setup/ids
-#   ADMIN_TOKEN         `openssl rand -hex 24`. Guards /setup and /admin with
+#   SYNC_MAPPINGS       optional; pair calendars in the web UI instead
+#   ADMIN_TOKEN         `openssl rand -hex 24`. Guards the web UI with
 #                       basic auth. Without it the OAuth pages are open to
 #                       anyone with the URL, and completing that flow replaces
 #                       your stored token.
@@ -28,8 +28,8 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 # /health returns 200 even before authorization, reporting
-# "awaiting-authorization" — so a fresh deploy passes its healthcheck and you
-# can reach /setup to complete the OAuth flow.
+# "awaiting-setup" — so a fresh deploy passes its healthcheck and you
+# can open the UI to complete the OAuth flow.
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 
