@@ -18,6 +18,9 @@ RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY web ./web
+# Compiles the server and builds the UI into dist/public; the UI's toolchain
+# is dev-only and pruned right after.
 RUN pnpm build && pnpm prune --prod
 
 

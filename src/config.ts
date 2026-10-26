@@ -151,11 +151,11 @@ const envSchema = credentialsSchema.extend({
   PUBLIC_URL: z.url(),
   LOG_LEVEL: z.enum(LOG_LEVELS).default('info'),
   /**
-   * Guards `/setup` and `/admin` with HTTP basic auth (username `admin`).
+   * Guards the web UI and its API with HTTP basic auth (username `admin`).
    *
-   * Without it the OAuth setup pages are open to anyone who finds the URL, and
-   * completing that flow overwrites the stored token — pointing the sync at a
-   * stranger's calendars. `/admin` refuses to work at all unless this is set.
+   * Without it the UI is open to anyone who finds the URL, and completing the
+   * OAuth flow there overwrites the stored token — pointing the sync at a
+   * stranger's calendars. Saving settings and resyncing are refused unless set.
    */
   ADMIN_TOKEN: z.string().min(16).optional(),
 
@@ -193,8 +193,60 @@ const envSchema = credentialsSchema.extend({
 export type Credentials = z.infer<typeof credentialsSchema>
 export type Config = z.infer<typeof envSchema>
 
-function parseOrThrow<T>(schema: z.ZodType<T>): T {
-  const parsed = schema.safeParse(process.env)
+/**
+ * Settings that can be changed from the UI without a redeploy.
+ *
+ * Stored in the same string format as their environment variable, so the env
+ * schema validates both and an unedited install behaves exactly as before:
+ * the environment supplies the starting value, a saved setting replaces it.
+ */
+export const EDITABLE_SETTINGS = [
+  'SYNC_MAPPINGS',
+  'DEFAULT_EVENT_DURATION_MINUTES',
+  'SYNC_FOREIGN_EVENTS',
+  'PRIORITY_PREFIXES',
+  'LABEL_PREFIXES',
+  'SYNC_COMMENTS',
+  'MAX_COMPLETIONS_PER_SYNC',
+] as const
+
+export type EditableSetting = (typeof EDITABLE_SETTINGS)[number]
+export type SettingValues = Partial<Record<EditableSetting, string>>
+
+let settingsSource: () => SettingValues = () => ({})
+
+/** Wire saved settings in. Until called, configuration is environment-only. */
+export function setSettingsSource(source: () => SettingValues): void {
+  settingsSource = source
+  cachedConfig = undefined
+}
+
+function effectiveEnv(overrides: SettingValues = {}): Record<string, unknown> {
+  return { ...process.env, ...settingsSource(), ...overrides }
+}
+
+/**
+ * Check candidate settings against the full schema before they are saved, so
+ * a bad value is refused at the form rather than discovered at the next boot.
+ */
+export function validateSettings(candidate: SettingValues): string[] {
+  const parsed = envSchema.safeParse(effectiveEnv(candidate))
+  if (parsed.success) return []
+  return parsed.error.issues.map(
+    (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,
+  )
+}
+
+/** Drop the cached configuration so the next read picks up saved settings. */
+export function reloadConfig(): void {
+  cachedConfig = undefined
+}
+
+function parseOrThrow<T>(
+  schema: z.ZodType<T>,
+  source: Record<string, unknown> = process.env,
+): T {
+  const parsed = schema.safeParse(source)
 
   if (!parsed.success) {
     const issues = parsed.error.issues
@@ -221,6 +273,6 @@ export function getCredentials(): Credentials {
  * without a populated `.env`.
  */
 export function getConfig(): Config {
-  cachedConfig ??= parseOrThrow(envSchema)
+  cachedConfig ??= parseOrThrow(envSchema, effectiveEnv())
   return cachedConfig
 }

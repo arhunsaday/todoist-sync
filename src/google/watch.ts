@@ -4,6 +4,7 @@ import { getConfig } from '../config.js'
 import type { Db } from '../db/index.js'
 import {
   getWatchChannel,
+  listWatchChannels,
   removeWatchChannel,
   upsertWatchChannel,
   type WatchChannel,
@@ -84,6 +85,15 @@ export async function ensureWatchChannels(
 ): Promise<void> {
   const config = getConfig()
   const renewBefore = Date.now() + config.WATCH_RENEW_WITHIN_HOURS * 3_600_000
+
+  // A calendar unmapped from the UI keeps its channel until it is stopped
+  // here; left alone it would wake the reconciler for a calendar nobody syncs.
+  const mapped = new Set(config.SYNC_MAPPINGS.map((m) => m.googleCalendarId))
+  for (const channel of listWatchChannels(db)) {
+    if (mapped.has(channel.calendarId)) continue
+    await stopChannel(client, channel)
+    removeWatchChannel(db, channel.calendarId)
+  }
 
   for (const { googleCalendarId } of config.SYNC_MAPPINGS) {
     const existing = getWatchChannel(db, googleCalendarId)

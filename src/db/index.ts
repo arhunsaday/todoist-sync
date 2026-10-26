@@ -3,9 +3,10 @@ import { dirname, isAbsolute, resolve } from 'node:path'
 
 import Database from 'better-sqlite3'
 
-import { getCredentials } from '../config.js'
+import { getCredentials, setSettingsSource } from '../config.js'
 import { logger } from '../logger.js'
 import { migrations } from './migrations.js'
+import { getSettings } from './settings.js'
 
 export type Db = Database.Database
 
@@ -91,8 +92,12 @@ export function migrate(db: Db): void {
 /** Process-wide connection, opened and migrated on first use. */
 export function getDb(): Db {
   if (instance === undefined) {
-    instance = open(getCredentials().DATABASE_PATH)
-    migrate(instance)
+    const db = open(getCredentials().DATABASE_PATH)
+    migrate(db)
+    instance = db
+    // Settings saved from the UI override their environment variables, for
+    // the server and the CLI scripts alike.
+    setSettingsSource(() => getSettings(db))
   }
   return instance
 }

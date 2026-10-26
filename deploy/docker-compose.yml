@@ -1,0 +1,39 @@
+# Todoist Sync behind Caddy, which obtains and renews the HTTPS certificate.
+# See docs/deployment.md → "Any VPS".
+#
+#   cp .env.example .env    # fill in credentials, PUBLIC_URL, ADMIN_TOKEN
+#   DOMAIN=sync.example.com docker compose up -d --build
+#
+# The domain's A/AAAA record must point at this machine, and ports 80 and 443
+# must be open, before the first start — Caddy needs both to get a certificate.
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      # Overrides the relative default copied from .env.example.
+      DATABASE_PATH: /data/sync.db
+    volumes:
+      - data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN to the public host name}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

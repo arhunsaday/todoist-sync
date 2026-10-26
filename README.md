@@ -1,96 +1,372 @@
-# Accord
+# todoist-to-google-calendar
 
-Vos tâches et votre agenda, enfin d’accord. Accord transforme ce dépôt de
-synchronisation personnelle en application web pour Todoist, Notion et Google
-Agenda : comptes individuels, règles visuelles, aperçu avant activation,
-historique, gestion des conflits et abonnement mensuel Stripe.
+Two-way sync between Todoist projects and Google calendars, **one project per
+calendar**. Todoist's official integration collapses every task into a single
+calendar; this routes each project to its own.
 
-## Essayer localement
+## How it works
 
-Node.js 22.17 ou plus récent et pnpm 10.34.6.
+> Webhooks are wake-up signals. Sync tokens are the source of truth.
 
-```sh
-corepack pnpm install --frozen-lockfile
-pnpm db:local
-pnpm dev:saas
+Both webhook handlers do the same thing: validate, wake the reconciler, return
+`200`. Neither reads task data out of its payload. The reconciler then pulls
+the authoritative diff via Todoist's `sync_token` and Google's `syncToken`.
+
+That split removes out-of-order, duplicate, and dropped deliveries as classes
+of bug — a lost webhook costs latency, not correctness, because the periodic
+reconcile catches it. Google forces this shape anyway: its push payload is an
+empty body, so the data has to be fetched separately regardless.
+
+### Loop prevention
+
+The hard part of two-way sync. Our write to Google fires a Google push →
+reconcile → write back to Todoist → fires a Todoist webhook → forever.
+
+After every write, the resulting fingerprint is stored for **both** sides. When
+the notification that write triggered comes back, the recomputed fingerprint
+matches what was stored and the change is dropped as an echo. Fingerprints
+cover only the fields that participate in the sync — never `etag`, `updated`,
+or `sequence`, which change on their own.
+
+### What syncs
+
+| Todoist | Google Calendar |
+|---|---|
+| `content` | event title |
+| `description` | event description |
+| due date, no time | all-day event |
+| due date with time | timed event, `duration` long (default 60 min) |
+| no due date | no event |
+| task completed | event deleted |
+| task moved to another mapped project | event moved to that calendar |
+| task in an unmapped project | no event |
+| recurring task | current occurrence only, as a plain event |
+
+Reverse: renaming, rescheduling, or resizing an event updates the task;
+dragging it to another mapped calendar moves the task to that project;
+**deleting an event completes the task**.
+
+### Derived title text and comments
+
+A task called
+`Prendre [rendez-vous chez le dentiste](https://www.doctolib.fr/search?around_me=true&keyword=dentiste)`
+with priority p1 and an `🔥urgent` label becomes:
+
+```
+!p1 @urg Prendre rendez-vous chez le dentiste
+─────── Todoist comments ───────
+2026-08-09 · booked an appointment for Thursday
 ```
 
-Ouvrir [la landing](http://127.0.0.1:5173/) ou
-[la démonstration](http://127.0.0.1:5173/demo). La démonstration utilise des
-exemples isolés dans le navigateur ; elle ne contacte pas vos outils.
+- **Links are flattened to their text.** Both of Todoist's formats —
+  markdown `[text](url)` and its own `url (text)` — so a long URL does not
+  swamp the title. A bare URL with no text is left alone, since removing it
+  would leave nothing.
+- `!p1` / `!p2` / `!p3` from Todoist priority (`PRIORITY_PREFIXES`). Note
+  Todoist's scale is inverted internally — p1 is `priority: 4`.
+- `@5min` / `@30min` / `@urg` from labels (`LABEL_PREFIXES`, `match:prefix`
+  pairs). The match ignores emoji, spaces, and punctuation, so `⚡ 5min` and
+  `5 min` both hit — but `15min` and `45min` deliberately do **not**, which a
+  naive substring test would get wrong.
+- Comments (`SYNC_COMMENTS`) are one-way: Google Calendar has no comment
+  concept to sync back.
 
-Sans identifiants OAuth, la landing et la démonstration sont utilisables,
-mais la connexion réelle indique explicitement que l’instance est à configurer.
-Copier `apps/worker/.dev.vars.example` vers `apps/worker/.dev.vars` pour renseigner
-les secrets de développement. Ne jamais utiliser le `.env` personnel legacy.
+**Why this needed care.** Titles and descriptions round-trip, so anything
+derived and added would otherwise be written back into Todoist as if the user
+had typed it. The failure is delayed, which is what makes it dangerous: while
+nothing changes the decorated title is discarded as an echo and everything
+looks correct. The first time the event is edited in Google, the decorated
+summary lands in the task's content — and the next push decorates the already
+decorated text, compounding on every edit after that.
 
-## Ce que contient le produit
+Two different defences are needed, because the transforms differ in kind.
 
-- Landing responsive et interface française, polices hébergées localement.
-- Connexion Google avec Better Auth, sessions persistées dans D1.
-- Connexions OAuth distinctes à Todoist, Google Agenda et Notion.
-- Règles entre deux ressources, direction unique ou bidirectionnelle.
-- Filtres de projets, sections, étiquettes, priorités et tâches datées.
-- Mapping des propriétés Notion par identifiant stable.
-- Durée, fuseau horaire, journées entières, préfixes et commentaires Todoist.
-- Prévisualisation, protection des lots importants, pause, reprise et conflits.
-- Travaux durables, reprises automatiques et prévention des écritures en double.
-- Essai de 14 jours sans carte ; Checkout et portail client Stripe.
-- Reprise explicite des événements créés par l’ancien synchroniseur.
+**Prefixes and comments are reversible.** Stripping is idempotent and only
+removes tokens this app emits (`src/sync/decorate.ts`), so `@something` you
+typed yourself survives and a doubled prefix gets cleaned up rather than
+entrenched. Comments work the same way: everything from the marker line onward
+is discarded on the way back, after normalising whatever HTML Google returns.
+Turning `PRIORITY_PREFIXES` off still strips existing `!p1` markers — and the
+old uppercase `!P1` — so disabling the feature tidies your titles instead of
+freezing them.
 
-Les opérations réelles nécessitent les applications OAuth et la configuration
-Stripe du propriétaire du service. Les tests locaux utilisent des réponses
-fournisseurs simulées ; ils ne remplacent pas les essais avec comptes dédiés.
+**Link flattening is not reversible.** The URL cannot be recovered from
+`Prendre rendez-vous chez le dentiste`, so no amount of stripping helps. Instead
+every event stores a hash of the title we wrote
+(`extendedProperties.private.titleHash`, excluded from the fingerprint). On the
+way back:
 
-## Architecture
+- title still hashes to what we wrote → the user did not rename it, so the
+  update **omits `content` entirely** and the task keeps its markdown link;
+- title differs → a genuine rename, so take what they typed. The link is lost,
+  but they overwrote it themselves.
 
-| Répertoire           | Responsabilité                                                  |
-| -------------------- | --------------------------------------------------------------- |
-| `apps/web`           | React, Vite, Tailwind et composants shadcn/Radix                |
-| `apps/worker`        | Hono, Better Auth, D1, OAuth, facturation et traitements        |
-| `packages/domain`    | Contrats Zod, filtres, conflits et décisions de synchronisation |
-| `packages/providers` | Clients HTTP Todoist, Notion et Google Agenda                   |
-| `src`                | Service Node personnel conservé pendant la migration            |
+An event with no stored hash — written by an older version — is treated as
+unchanged. Missing a rename is recoverable; deleting a URL out of a task's name
+is not.
 
-Un Durable Object par utilisateur sérialise les changements. D1 conserve les
-opérations avant l’avancement des curseurs. Queues et les alarmes relancent les
-travaux ; Cron rattrape les notifications perdues toutes les 15 minutes.
-Les jetons sont chiffrés et les API métier imposent l’utilisateur de la session.
+Events created directly on a mapped calendar become tasks in the paired
+project, and are then tagged so they are managed from that point on. Skipped:
+recurring series, birthdays, working-location and Gmail-generated events, and
+invitations you declined.
 
-## Vérifier et construire
+**Recurring calendar events are not turned into tasks.** `timeMin`/`timeMax`
+are forbidden alongside `syncToken`, so a recurring series cannot be expanded
+into instances under incremental sync, and a half-synced series is worse than
+none. Set `SYNC_RECURRING_FOREIGN_EVENTS=true` only once an RRULE translation
+layer exists — the flag alone does nothing.
 
-```sh
-pnpm test:saas
-pnpm test:worker
-pnpm typecheck:saas
-pnpm test:browser
-pnpm build:saas
+### How often things sync
+
+Both sides are cursor-based, so **an unchanged task is never looked at again.**
+The 15-minute timer is not a re-scan — it runs the same reconcile the webhooks
+do, asking each side what changed since its cursor. A task synced last month
+and untouched since costs nothing and is never revisited.
+
+Full passes happen only when a cursor is missing:
+
+- **Every start.** Boot re-links managed events from their `todoistId` tags and
+  then does a full sync, so a cold start imports every existing task and a
+  restart against a lost volume adopts the events already there rather than
+  duplicating them.
+- **Google's `410 GONE`.** An expired `syncToken` clears itself and re-lists
+  that calendar in full. Self-healing, on Google's schedule.
+- **A manual resync.** See below.
+
+The gap this leaves is asymmetric: Google's side eventually re-lists itself,
+Todoist's never does. And because a failed change advances the cursor anyway —
+deliberately, so one broken task cannot stall every other change — a change
+that fails to apply is dropped and will not be retried until that task is
+edited again. That is what a manual resync is for.
+
+### Forcing a full resync
+
+Picks up tasks that predate the app, or that an earlier error skipped, without
+wiping the volume.
+
+- **Resynchroniser** in the UI — behind a confirmation. Needs `ADMIN_TOKEN`.
+- **`pnpm full-sync`** (`--dry-run` supported) — same thing from a shell, if
+  you have access to the machine holding the database. On a hosted deploy that
+  is the server, so the button is usually easier.
+
+Both discard the Todoist cursor and every Google cursor, then reconcile. Safe
+to repeat: links are left intact, so anything already mirrored matches its
+stored fingerprint and is skipped. Only genuinely missing or drifted events
+produce writes — a resync of an already-consistent setup performs **zero**.
+
+### What this app can and cannot destroy
+
+**It cannot delete a Todoist task.** Not a policy — a capability limit. The only
+commands it ever sends are `item_add`, `item_update`, `item_move`,
+`item_complete`, and `item_uncomplete`; there is no `item_delete` anywhere in
+the codebase. The OAuth scope is `data:read_write`, and Todoist requires the
+separate `data:delete` scope to delete a task, which is deliberately not
+requested. Even a comprehensively broken build could not delete your tasks.
+
+**It cannot delete a Google calendar.** It calls `events.*` only — never
+`calendars.delete` or `calendarList.delete`.
+
+So the worst it can do to Todoist is **complete** tasks, which Todoist keeps and
+lets you un-complete.
+
+| You do this | What happens |
+|---|---|
+| **Stop the service** | Nothing. Cursors persist; on restart the incremental sync resumes and catches up on everything that changed while it was down. Google's push channels lapse and are re-registered at boot. |
+| **Delete a mapped Google calendar** | `events.list` 404s, the reconcile logs an error and retries. **No tasks are touched** — a deleted calendar reports no cancellations, so nothing reads as "the user deleted these events". Remove it from `SYNC_MAPPINGS` to stop the errors. |
+| **Wipe the database** | Not destructive, but you must re-authorize at `/setup` — the OAuth tokens live there. Startup then re-links existing events by their `todoistId` tag before syncing, so nothing is duplicated. |
+| **Delete every event in a mapped calendar** | Each deletion is read as "task done", so this is the one path to widespread change. Guarded by the circuit breaker below. |
+
+### The completion circuit breaker
+
+Before applying a Google pass, the engine counts how many tasks it would
+complete. Over `MAX_COMPLETIONS_PER_SYNC` (default 25, `0` disables) it
+**refuses the whole pass** and leaves the sync token untouched — so the changes
+are neither applied nor lost. Nothing is half-done.
+
+The refusal is logged at `error` and the calendar appears in
+`blockedCalendars` on `/health`, with `status: "blocked"`. To recover: restore
+the calendar, or raise the limit (UI → Options) and let the pass through. Because the cursor
+never moved, the same changes are still waiting.
+
+Two details that make it usable rather than annoying:
+
+- **A bulk cross-calendar move does not trip it.** Google reports a move as a
+  cancellation on the source calendar, indistinguishable from a deletion until
+  each event is looked for elsewhere. The cheap count runs first, costing no
+  API calls; only once it exceeds the limit are the probes paid for, to confirm
+  the deletions are real. Reorganising your calendars will not be mistaken for
+  destroying them.
+- **Only the affected calendar stalls.** The other three, and the whole Todoist
+  direction, keep syncing.
+
+### Conflict policy
+
+`pullTodoist` runs before `pullGoogle`, so if the same task is edited on both
+sides within one window, **Todoist wins**. This is a deliberate simplification
+over timestamp comparison: it needs no extra fetch per change and no clock-skew
+handling, at the cost of losing a simultaneous calendar-side edit.
+
+## Setup
+
+**Disable the official Todoist ↔ Google Calendar integration first.** Two sync
+engines on the same events will fight.
+
+### 1. Todoist app
+
+Create an app in the [App Management console](https://app.todoist.com/app/settings/integrations/developer):
+
+- OAuth redirect URI: `https://<your-domain>/setup/todoist/callback`
+- Webhook URL: `https://<your-domain>/webhooks/todoist`
+- Webhook events: `item:added`, `item:updated`, `item:completed`,
+  `item:uncompleted`, `item:deleted`
+- Scope: `data:read_write`
+
+Webhooks only fire for **OAuth-authorized apps**. A personal API token will not
+trigger them, no matter how it is configured.
+
+The webhook signature is an HMAC of the raw body under the **client secret**.
+The "Verification Token" shown in the console is not used here.
+
+### 2. Google Cloud project
+
+The consent screen now lives under **Google Auth Platform**, not the old
+"OAuth consent screen" menu item.
+
+1. Enable the [Calendar API](https://console.cloud.google.com/apis/library/calendar-json.googleapis.com).
+2. **Google Auth Platform → Get started**: app name, support email,
+   **Audience: External**, contact email.
+3. **Data Access → Add or remove scopes**: add
+   `https://www.googleapis.com/auth/calendar`. It is marked sensitive; that is
+   expected.
+4. **Audience → Publish app.** In *Testing* status, refresh tokens expire after
+   7 days and the sync dies silently every week. Publishing unverified is fine
+   for a single user — you get an "unverified app" interstitial at consent
+   (Advanced → Go to…), but refresh tokens stop expiring. Verification only
+   matters past 100 users.
+5. **Clients → Create client**, type **Web application**:
+   - Authorized redirect URI: `https://<your-domain>/setup/google/callback`
+   - Authorized JavaScript origins: **leave empty** — that field is for
+     browser-side flows, and this is a server-side code exchange.
+
+`GOOGLE_REDIRECT_URI` must be byte-identical to the console entry; Google
+compares it as an exact string. A work account may block creating OAuth
+clients, in which case use a personal Cloud project.
+
+### 3. Deploy, then connect, then pair
+
+```bash
+cp .env.example .env   # credentials only
+openssl rand -hex 24   # use as ADMIN_TOKEN
 ```
 
-Le build produit le Worker et ses assets dans `apps/web/dist/client/`.
-Les configurations de déploiement générées se trouvent dans
-`apps/web/dist/client/accord/wrangler.json`.
+**Set `ADMIN_TOKEN`.** Everything except `/health` and the two webhooks sits
+behind HTTP basic auth (username `admin`) when it is present. Without it the
+UI is reachable by anyone who finds the URL, completing the OAuth flow there
+**replaces your stored token** — so a stranger could point the sync at their
+own calendars — and saving settings or resyncing is refused.
 
-Le service personnel conserve ses commandes `pnpm dev`, `pnpm test`,
-`pnpm build`, `pnpm start` et sa base SQLite. Sa documentation se trouve dans
-[README.legacy.md](README.legacy.md).
+Deploy (see [docs/deployment.md](docs/deployment.md) for each host), then open
+the app's URL:
 
-## Mise en service
+1. **Vue d'ensemble** → connect Todoist and Google Agenda.
+2. **Paires** → pick a calendar for each project to sync, and save. Syncing
+   starts right away and imports every task of the new projects; no redeploy.
+3. **Options** → prefixes, comments, default duration, circuit breaker.
 
-Un assistant guidé prépare OAuth, Stripe test et Cloudflare : `pnpm setup:service`.
-Il ne déploie rien automatiquement. La configuration privée reste hors Git.
-L’exercice `pnpm backup:drill` vérifie export/restauration de fixtures D1 isolées.
+Until both accounts are connected and one pair exists, the app serves the UI
+and syncs nothing — `/health` reports `awaiting-setup` and returns `200` so the
+platform does not restart-loop it.
 
-- [Assistant et lancement](docs/launch.md)
-- [Sauvegarder et restaurer](docs/backup-restore.md)
-- [Informations légales à compléter](docs/legal/publication.md)
+#### Where settings live
 
-- [Configurer et déployer](docs/deployment.md)
-- [Utiliser les règles](docs/user-guide.md)
-- [Migrer le service personnel](docs/migration.md)
-- [Preuves de validation et limites](docs/validation.md)
-- [Contrats des fournisseurs](docs/provider-contracts.md)
+Pairs and options saved in the UI are stored in the database and **override**
+the matching environment variables (`SYNC_MAPPINGS`, `PRIORITY_PREFIXES`,
+`LABEL_PREFIXES`, `SYNC_COMMENTS`, `DEFAULT_EVENT_DURATION_MINUTES`,
+`SYNC_FOREIGN_EVENTS`, `MAX_COMPLETIONS_PER_SYNC`). The variables still work and
+give the starting values, so an existing deployment keeps its mapping on the
+first boot and only stops reading the variable once you save from the UI.
 
-Les pages de confidentialité et de conditions sont des documents de préparation
-au lancement. Finaliser l’identité de l’éditeur et les informations légales avant
-l’ouverture commerciale. Aucun compte distant ni abonnement n’est créé au lancement local.
+Changing a pair applies without a restart: the new mapping takes effect at
+the next pass (never in the middle of one), push channels follow, and a full
+resync imports the tasks of newly paired projects. Unpairing a project leaves
+its existing events where they are.
+
+`pnpm list-ids` prints projects and calendars from a terminal, but only works
+where the OAuth tokens are — on a hosted deploy that is the server.
+
+### 4. Dry run before the first live sync
+
+```bash
+pnpm reconcile:once --dry-run
+```
+
+Logs every intended write without performing one, and persists no state. This
+is the cheapest way to catch a wrong mapping before it creates 400 events.
+Needs local tokens, so run it after authorizing locally, or accept that the
+first hosted reconcile is the live one.
+
+## Deployment
+
+One container, one SQLite file. Any host that runs a Docker image with a
+persistent disk and public HTTPS works: Railway, a VPS, Fly.io, Render,
+Coolify… Step-by-step instructions for each are in
+**[docs/deployment.md](docs/deployment.md)**.
+
+## Recovery
+
+The SQLite file is a **cache, not the source of truth** — every managed event
+carries `extendedProperties.private.todoistId`. If the volume is lost:
+
+```bash
+pnpm rebuild-links          # reconstruct pairings from the calendars
+pnpm rebuild-links --prune  # also delete events whose task is gone
+```
+
+Links are rebuilt with a blank Todoist fingerprint, so the next reconcile
+re-pushes every task. That costs one write per task but guarantees
+convergence, rather than silently accepting drift from the downtime.
+
+## Development
+
+```bash
+pnpm install
+pnpm test          # no network
+pnpm typecheck     # server and UI
+pnpm dev           # API on :3000
+pnpm dev:web       # UI on :5173, proxies /api to :3000
+```
+
+The UI lives in `web/` (React, Vite, Tailwind, shadcn/ui components in
+`web/src/components/ui`). `pnpm build` compiles the server to `dist/` and the
+UI to `dist/public/`, which the server serves itself.
+
+Local webhook delivery needs a public URL — `cloudflared tunnel --url
+http://localhost:3000`, then set `PUBLIC_URL` to the tunnel origin.
+
+The mapping, fingerprint, and time modules are pure and directly testable. The
+engine tests run against in-memory fakes that reproduce the one behaviour that
+matters: **a write is reported back on the next incremental read**, exactly as
+the real services do. Without that, an echo-suppression test proves nothing.
+
+## Known sharp edges
+
+- Todoist's command API returns no item body, so the post-write task state is
+  reconstructed rather than read back. If Todoist normalises a field
+  differently, the next reconcile corrects it in one extra pass. It cannot
+  loop — that pass stores what Todoist actually reported.
+- A change that fails to apply does not hold back the sync cursor. Stalling
+  every other change behind one broken task is worse; failures are logged at
+  `error` and that is the signal to look.
+- Multi-day all-day events map to a Todoist `duration` in days. Watch the
+  first live run for `item_update` rejections if Todoist declines a day
+  duration on a date-only task.
+- `start.date` and `start.dateTime` are mutually exclusive, and Google's patch
+  **deep-merges** nested objects — so both are always sent with the unused one
+  explicitly `null`. Omitting it leaves a stale value behind and the request
+  fails with `400 Invalid start time.`, which is exactly what happens when a
+  task gains or loses its time of day. The engine tests cover both directions,
+  and the Google fake reproduces the 400 rather than quietly accepting it.
+- Comments live in a separate resource, so editing one does not change its
+  task. The engine maps a changed note back to its `item_id` and re-renders
+  from a local cache of items (`src/db/items.ts`) — otherwise a new comment
+  would not appear until the task itself was next edited.
