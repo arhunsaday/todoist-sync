@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 import { serve } from '@hono/node-server'
 
 import { getConfig } from './config.js'
@@ -7,13 +9,16 @@ import { ensureWatchChannels } from './google/watch.js'
 import { logger } from './logger.js'
 import { isAuthorized, tryCreateEngine } from './runtime.js'
 import type { SyncEngine } from './sync/engine.js'
+import { Routing } from './sync/routing.js'
 import { createApp } from './web/server.js'
 
 /** Re-register push channels well inside Google's TTL. */
 const WATCH_CHECK_INTERVAL_MS = 12 * 3_600_000
 
-const config = getConfig()
+// Opening the database also wires in the settings saved from the UI, so it
+// must come before the first read of the configuration.
 const db = getDb()
+const config = getConfig()
 
 let engine: SyncEngine | undefined
 const timers: NodeJS.Timeout[] = []
@@ -27,7 +32,7 @@ const timers: NodeJS.Timeout[] = []
 async function activate(): Promise<void> {
   if (engine !== undefined) return
 
-  const setupUrl = new URL('/setup', config.PUBLIC_URL).toString()
+  const setupUrl = config.PUBLIC_URL
 
   if (!isAuthorized(db)) {
     logger.warn({ setup: setupUrl }, 'not authorized yet; visit the setup page')
@@ -36,11 +41,10 @@ async function activate(): Promise<void> {
 
   // Authorized but unmapped: the sync would run and touch nothing, which looks
   // identical to being broken. Say so instead.
-  if (config.SYNC_MAPPINGS.length === 0) {
+  if (getConfig().SYNC_MAPPINGS.length === 0) {
     logger.warn(
-      { ids: new URL('/setup/ids', config.PUBLIC_URL).toString() },
-      'SYNC_MAPPINGS is empty; nothing will sync. Build it from the ids page, ' +
-        'set the variable, and redeploy.',
+      { ui: config.PUBLIC_URL },
+      'no project is mapped to a calendar yet; nothing will sync. Pair them in the UI.',
     )
     return
   }
@@ -50,7 +54,7 @@ async function activate(): Promise<void> {
 
   await refreshWatchChannels()
   logger.info(
-    { calendars: config.SYNC_MAPPINGS.length },
+    { calendars: getConfig().SYNC_MAPPINGS.length },
     'sync active; running initial resync',
   )
   // resyncAll rather than a plain reconcile: it re-links managed events from
@@ -71,11 +75,32 @@ async function refreshWatchChannels(): Promise<void> {
   }
 }
 
+/**
+ * Apply settings saved from the UI. Options are read on every pass, so only a
+ * changed mapping needs work: swap the routing between passes, move the push
+ * channels, and resync so tasks in a newly mapped project are imported.
+ */
+async function onSettingsChanged(change: { mappings: boolean }): Promise<void> {
+  if (!change.mappings) return
+
+  if (engine === undefined) {
+    // First mapping ever: build the engine now rather than after a restart.
+    await activate()
+    return
+  }
+
+  engine.setRouting(Routing.fromConfig())
+  await refreshWatchChannels()
+  engine.triggerResyncAll('mapping changed')
+}
+
 const app = createApp({
   db,
   adminToken: config.ADMIN_TOKEN,
   getEngine: () => engine,
   onAuthorized: activate,
+  onSettingsChanged,
+  staticRoot: fileURLToPath(new URL('./public/', import.meta.url)),
 })
 
 const server = serve({ fetch: app.fetch, port: config.PORT }, (info) => {

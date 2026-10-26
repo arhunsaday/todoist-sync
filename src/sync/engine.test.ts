@@ -660,6 +660,46 @@ describe('full resync', () => {
 })
 
 // MAX_COMPLETIONS_PER_SYNC is 3 in the test environment.
+describe('changing the mapping without a restart', () => {
+  it('imports a newly mapped project on the next resync', async () => {
+    todoist.seed(task({ id: 'item-3', project_id: 'proj-3' }))
+    await engine.reconcile()
+    expect(google.eventsOn(HOME)).toHaveLength(0)
+
+    engine.setRouting(
+      new Routing([
+        { todoistProjectId: 'proj-1', googleCalendarId: WORK },
+        { todoistProjectId: 'proj-3', googleCalendarId: HOME },
+      ]),
+    )
+    await engine.resyncAll()
+
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+  })
+
+  // A pass that read Todoist under one mapping and Google under another would
+  // read the difference as user edits.
+  it('waits for the running pass to finish before switching', async () => {
+    const running = engine.reconcile()
+
+    engine.setRouting(
+      new Routing([{ todoistProjectId: 'proj-3', googleCalendarId: HOME }]),
+    )
+    expect(engine.status.running).toBe(true)
+    await running
+    expect(engine.status.lastRunAt).toBeTypeOf('number')
+
+    // In force from the next pass on. Tasks the old mapping already skipped
+    // are left to the resync that a mapping change also starts.
+    todoist.seed(task({ id: 'item-3', project_id: 'proj-3' }))
+    todoist.seed(task({ id: 'item-1', project_id: 'proj-1' }))
+    await engine.reconcile()
+
+    expect(google.eventsOn(HOME)).toHaveLength(1)
+    expect(google.eventsOn(WORK)).toHaveLength(0)
+  })
+})
+
 describe('completion circuit breaker', () => {
   /** Same fakes and database, but with the guard effectively off. */
   function permissiveEngine(): SyncEngine {

@@ -75,4 +75,15 @@ export const migrations: ReadonlyArray<{ name: string; sql: string }> = [
       CREATE INDEX notes_item ON notes (item_id);
     `,
   },
+  {
+    name: '003_settings',
+    sql: `
+      -- Settings edited from the UI. Values use the same string format as the
+      -- matching environment variable, which they override.
+      CREATE TABLE settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `,
+  },
 ]

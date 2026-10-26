@@ -1,13 +1,16 @@
-import { Hono } from 'hono'
+import { serveStatic } from '@hono/node-server/serve-static'
+import { Hono, type MiddlewareHandler } from 'hono'
 import { basicAuth } from 'hono/basic-auth'
 
-import { getConfig } from '../config.js'
+import { getConfig, reloadConfig, validateSettings } from '../config.js'
 import type { Db } from '../db/index.js'
+import { saveSettings } from '../db/settings.js'
 import { getToken } from '../db/state.js'
-import { discover, type NamedId } from '../discovery.js'
+import { discover } from '../discovery.js'
 import * as googleOAuth from '../google/oauth.js'
 import { GOOGLE_WEBHOOK_PATH } from '../google/watch.js'
 import { logger } from '../logger.js'
+import { currentSettings, settingsSchema, toSettingValues } from '../settings.js'
 import type { SyncEngine } from '../sync/engine.js'
 import * as todoistOAuth from '../todoist/oauth.js'
 import {
@@ -35,84 +38,18 @@ export interface AppDeps {
   getEngine: () => SyncEngine | undefined
   /** Called after a successful OAuth callback so the engine can be built. */
   onAuthorized: () => Promise<void>
+  /**
+   * Called after settings are saved from the UI. The mapping needs more than
+   * a config reload: routing, watch channels and an import of new projects.
+   */
+  onSettingsChanged?: (change: { mappings: boolean }) => Promise<void>
+  /** Absolute path to the built UI. Omitted in tests and under `pnpm dev`. */
+  staticRoot?: string | undefined
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function page(title: string, body: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>${title}</title>
-<body style="font-family:system-ui;max-width:52rem;margin:4rem auto;line-height:1.6;padding:0 1rem">
-<h1>${title}</h1>${body}</body>`
-}
-
-/**
- * A pairing form that emits the `SYNC_MAPPINGS` line.
- *
- * Hand-assembling the value means copying opaque ids like
- * `c_1a2b…@group.calendar.google.com` by eye, which is exactly the kind of
- * thing that produces a mapping that looks right and silently syncs to the
- * wrong calendar.
- */
-function mappingBuilder(projects: NamedId[], calendars: NamedId[]): string {
-  if (projects.length === 0 || calendars.length === 0) return ''
-
-  const options = [
-    '<option value="">— not synced —</option>',
-    ...calendars.map(
-      (c) =>
-        `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`,
-    ),
-  ].join('')
-
-  const rows = projects
-    .map(
-      (project) => `<tr>
-        <td style="padding:.35rem .75rem .35rem 0">${escapeHtml(project.name)}</td>
-        <td style="padding:.35rem 0">
-          <select data-project="${escapeHtml(project.id)}">${options}</select>
-        </td>
-      </tr>`,
-    )
-    .join('')
-
-  return `<h2>Build SYNC_MAPPINGS</h2>
-<p>Pick the calendar each project should sync with.</p>
-<table><tbody>${rows}</tbody></table>
-<p style="margin-top:1.5rem"><strong>Paste this into your environment:</strong></p>
-<pre id="out" style="background:#f4f4f5;padding:1rem;border-radius:6px;white-space:pre-wrap;word-break:break-all">SYNC_MAPPINGS=</pre>
-<script>
-  const selects = [...document.querySelectorAll('select[data-project]')]
-  const out = document.getElementById('out')
-  const render = () => {
-    const pairs = selects
-      .filter((s) => s.value !== '')
-      .map((s) => s.dataset.project + ':' + s.value)
-    out.textContent = 'SYNC_MAPPINGS=' + pairs.join(',')
-  }
-  selects.forEach((s) => s.addEventListener('change', render))
-  render()
-</script>`
-}
-
-function idTable(rows: NamedId[], heading: string): string {
-  if (rows.length === 0) return `<h2>${heading}</h2><p>(none found)</p>`
-
-  const body = rows
-    .map(
-      (row) => `<tr>
-        <td style="padding:.25rem .75rem .25rem 0"><code>${escapeHtml(row.id)}</code></td>
-        <td>${escapeHtml(row.name)}</td>
-      </tr>`,
-    )
-    .join('')
-
-  return `<h2>${heading}</h2><table><tbody>${body}</tbody></table>`
+/** Reachable without the admin password: the platform and the two providers. */
+function isPublicPath(path: string): boolean {
+  return path === '/health' || path.startsWith('/webhooks/')
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -127,16 +64,14 @@ export function createApp(deps: AppDeps): Hono {
   // healthcheck must reach it unauthenticated).
   if (adminToken !== undefined) {
     const guard = basicAuth({ username: 'admin', password: adminToken })
-    // '/setup/*' does not match '/setup' itself, so both are needed.
-    app.use('/setup', guard)
-    app.use('/setup/*', guard)
-    app.use('/admin', guard)
-    app.use('/admin/*', guard)
+    const guardPrivate: MiddlewareHandler = (c, next) =>
+      isPublicPath(c.req.path) ? next() : guard(c, next)
+    app.use('*', guardPrivate)
   } else {
     logger.warn(
-      'ADMIN_TOKEN is not set: /setup is publicly reachable, and anyone who ' +
-        'completes the OAuth flow there replaces the stored token. /admin is ' +
-        'disabled until you set it.',
+      'ADMIN_TOKEN is not set: the UI and /setup are publicly reachable, and ' +
+        'anyone who completes the OAuth flow there replaces the stored token. ' +
+        'Saving settings and resyncing are disabled until you set it.',
     )
   }
 
@@ -212,115 +147,102 @@ export function createApp(deps: AppDeps): Hono {
   })
 
   /* ---------------------------------------------------------------- */
-  /* One-time OAuth setup                                              */
+  /* UI API                                                            */
   /* ---------------------------------------------------------------- */
 
-  app.get('/setup', (c) => {
-    const todoist = getToken(deps.db, 'todoist') !== undefined
-    const google = getToken(deps.db, 'google') !== undefined
-    const mappings = getConfig().SYNC_MAPPINGS.length
-    const mark = (done: boolean) => (done ? '&#10003;' : '&#9679;')
-
-    const step3 =
-      mappings > 0
-        ? `${mark(true)} <code>SYNC_MAPPINGS</code> &mdash; ${mappings}
-           project${mappings === 1 ? '' : 's'} mapped
-           (<a href="/setup/ids">change</a>)`
-        : `${mark(false)} <a href="/setup/ids">Build <code>SYNC_MAPPINGS</code></a>
-           &mdash; needs both authorizations first`
-
-    return c.html(
-      page(
-        'Setup',
-        `<ol style="padding-left:1.2rem">
-           <li>${mark(todoist)} <a href="/setup/todoist">Authorize Todoist</a></li>
-           <li>${mark(google)} <a href="/setup/google">Authorize Google Calendar</a></li>
-           <li>${step3}</li>
-         </ol>
-         <p>Syncing starts once all three are done. Step 3 is an environment
-            variable, so it takes a redeploy to apply.</p>
-         <hr style="margin:2rem 0;border:none;border-top:1px solid #ddd">
-         <p><a href="/admin/resync">Run a full resync</a> &mdash; picks up tasks
-            that predate the app, or that an earlier error skipped.</p>`,
-      ),
+  const state = () => {
+    const engine = deps.getEngine()
+    const linkCounts = Object.fromEntries(
+      deps.db
+        .prepare<[], { calendarId: string; count: number }>(
+          `SELECT google_calendar_id AS calendarId, COUNT(*) AS count
+           FROM links GROUP BY google_calendar_id`,
+        )
+        .all()
+        .map(({ calendarId, count }) => [calendarId, count]),
     )
+    const publicUrl = getConfig().PUBLIC_URL
+
+    return {
+      authorized: {
+        todoist: getToken(deps.db, 'todoist') !== undefined,
+        google: getToken(deps.db, 'google') !== undefined,
+      },
+      // Writes need the admin password; the UI says why its buttons are off.
+      canEdit: adminToken !== undefined,
+      syncing: engine !== undefined,
+      engine: engine?.status ?? null,
+      blockedCalendars: engine?.blockedCalendars ?? [],
+      linkCounts,
+      settings: currentSettings(),
+      webhooks: {
+        todoist: new URL(TODOIST_WEBHOOK_PATH, publicUrl).toString(),
+        google: new URL(GOOGLE_WEBHOOK_PATH, publicUrl).toString(),
+      },
+    }
+  }
+
+  app.get('/api/state', (c) => c.json(state()))
+
+  app.get('/api/discovery', async (c) => c.json(await discover(deps.db)))
+
+  app.put('/api/settings', async (c) => {
+    if (adminToken === undefined) {
+      return c.json({ errors: ['ADMIN_TOKEN is not set'] }, 503)
+    }
+
+    const parsed = settingsSchema.safeParse(await c.req.json().catch(() => null))
+    if (!parsed.success) {
+      return c.json({ errors: parsed.error.issues.map((i) => i.message) }, 400)
+    }
+
+    const values = toSettingValues(parsed.data)
+    if (Array.isArray(values)) return c.json({ errors: values }, 400)
+
+    // The env schema also catches what the structured one cannot, such as a
+    // calendar mapped to two projects.
+    const errors = validateSettings(values)
+    if (errors.length > 0) return c.json({ errors }, 400)
+
+    const before = getConfig().SYNC_MAPPINGS
+    saveSettings(deps.db, values)
+    reloadConfig()
+
+    const mappings = JSON.stringify(before) !== JSON.stringify(getConfig().SYNC_MAPPINGS)
+    logger.info({ mappings }, 'settings saved from the UI')
+    await deps.onSettingsChanged?.({ mappings })
+
+    return c.json(state())
   })
-
-  app.get('/setup/ids', async (c) => {
-    const { projects, calendars, errors } = await discover(deps.db)
-
-    const problems =
-      errors.length === 0
-        ? ''
-        : `<p style="color:#b91c1c">${errors
-            .map((error) => escapeHtml(error))
-            .join('<br>')}</p>`
-
-    return c.html(
-      page(
-        'Project and calendar ids',
-        problems +
-          mappingBuilder(projects, calendars) +
-          idTable(projects, 'Todoist projects') +
-          idTable(calendars, 'Google calendars (writable only)') +
-          '<p style="margin-top:2rem"><a href="/setup">Back to setup</a></p>',
-      ),
-    )
-  })
-
-  /* ---------------------------------------------------------------- */
-  /* Admin                                                             */
-  /* ---------------------------------------------------------------- */
 
   /**
-   * Force a full resync.
-   *
-   * Split across GET and POST on purpose: link scanners and browser
-   * prefetchers follow GETs, and a GET that mutated would fire on its own.
-   * The same reasoning applies to any future one-click action.
+   * Force a full resync: picks up tasks that predate the app, or that an
+   * earlier error skipped. A POST, so prefetchers and link scanners that
+   * follow GETs cannot fire it on their own.
    */
-  app.get('/admin/resync', (c) => {
-    if (adminToken === undefined) return c.text('ADMIN_TOKEN is not set', 503)
-
-    return c.html(
-      page(
-        'Full resync',
-        `<p>Discards both sync cursors and reconciles from scratch, so tasks
-            that predate the app — or that were skipped by an earlier error —
-            get picked up.</p>
-         <p>Safe to repeat: anything already mirrored matches its stored
-            fingerprint and is skipped, so only genuinely missing events are
-            created.</p>
-         <form method="post" action="/admin/resync">
-           <button type="submit" style="font-size:1rem;padding:.6rem 1.2rem">
-             Run full resync
-           </button>
-         </form>
-         <p style="margin-top:2rem"><a href="/setup">Back to setup</a></p>`,
-      ),
-    )
-  })
-
-  app.post('/admin/resync', (c) => {
-    if (adminToken === undefined) return c.text('ADMIN_TOKEN is not set', 503)
+  app.post('/api/resync', (c) => {
+    if (adminToken === undefined) {
+      return c.json({ errors: ['ADMIN_TOKEN is not set'] }, 503)
+    }
 
     const engine = deps.getEngine()
     if (engine === undefined) {
-      return c.text('not authorized or not mapped yet; see /setup', 409)
+      return c.json({ errors: ['Connect both accounts and map a project first.'] }, 409)
     }
 
     // A full sync can take a while, so do not hold the request open for it.
-    engine.triggerResyncAll('admin-endpoint')
-
-    return c.html(
-      page(
-        'Resync started',
-        `<p>Running in the background — watch the logs for
-            <code>full resync finished</code>.</p>
-         <p><a href="/setup">Back to setup</a></p>`,
-      ),
-    )
+    engine.triggerResyncAll('ui')
+    return c.json(state())
   })
+
+  /* ---------------------------------------------------------------- */
+  /* OAuth                                                             */
+  /* ---------------------------------------------------------------- */
+
+  // The old setup and admin pages now live in the UI.
+  app.get('/setup', (c) => c.redirect('/'))
+  app.get('/setup/ids', (c) => c.redirect('/'))
+  app.get('/admin/resync', (c) => c.redirect('/'))
 
   app.get('/setup/todoist', (c) =>
     c.redirect(todoistOAuth.buildAuthorizeUrl(issueState('todoist'))),
@@ -336,7 +258,7 @@ export function createApp(deps: AppDeps): Hono {
 
     await todoistOAuth.exchangeCode(deps.db, code)
     await deps.onAuthorized()
-    return c.html(page('Todoist authorized', '<p><a href="/setup">Back</a></p>'))
+    return c.redirect('/?connected=todoist')
   })
 
   app.get('/setup/google', (c) =>
@@ -353,8 +275,18 @@ export function createApp(deps: AppDeps): Hono {
 
     await googleOAuth.exchangeCode(deps.db, code)
     await deps.onAuthorized()
-    return c.html(page('Google authorized', '<p><a href="/setup">Back</a></p>'))
+    return c.redirect('/?connected=google')
   })
+
+  /* ---------------------------------------------------------------- */
+  /* UI                                                                */
+  /* ---------------------------------------------------------------- */
+
+  if (deps.staticRoot !== undefined) {
+    app.use('/assets/*', serveStatic({ root: deps.staticRoot }))
+    // Single-page app: every other GET renders the shell.
+    app.get('*', serveStatic({ root: deps.staticRoot, path: 'index.html' }))
+  }
 
   return app
 }

@@ -11,6 +11,7 @@ export interface SyncContextDeps {
   db: Db
   todoist: TodoistClient
   google: GoogleCalendarClient
+  /** Replaced by `SyncEngine.setRouting` between passes, never during one. */
   routing: Routing
   /** Log intended writes without performing them, and skip link persistence. */
   dryRun?: boolean

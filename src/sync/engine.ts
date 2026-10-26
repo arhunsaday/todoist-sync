@@ -22,6 +22,7 @@ import {
   isGenuineDeletion,
   wouldCompleteTask,
 } from './google-to-todoist.js'
+import type { Routing } from './routing.js'
 import { applyTodoistItem } from './todoist-to-google.js'
 
 /**
@@ -44,6 +45,9 @@ export class SyncEngine {
   private dirty = false
   /** Calendars whose pass the circuit breaker is currently refusing. */
   private readonly blocked = new Set<string>()
+  /** A mapping saved from the UI, waiting for the current pass to end. */
+  private pendingRouting: Routing | undefined
+  private lastRun: { finishedAt: number; error?: string } | undefined
 
   constructor(deps: SyncContextDeps) {
     this.ctx = createSyncContext(deps)
@@ -67,13 +71,49 @@ export class SyncEngine {
     try {
       do {
         this.dirty = false
+        this.applyPendingRouting()
         await this.pullTodoist()
         for (const calendarId of this.ctx.routing.calendarIds) {
           await this.pullGoogle(calendarId)
         }
       } while (this.dirty)
+      this.lastRun = { finishedAt: Date.now() }
+    } catch (error) {
+      this.lastRun = { finishedAt: Date.now(), error: (error as Error).message }
+      throw error
     } finally {
       this.running = false
+    }
+  }
+
+  /**
+   * Swap the project↔calendar mapping without restarting.
+   *
+   * Never applied mid-pass: a pass that read Todoist under one mapping and
+   * Google under another would treat the difference as user edits. The new
+   * mapping waits for the next pass to begin, which this also requests.
+   */
+  setRouting(routing: Routing): void {
+    this.pendingRouting = routing
+    if (this.running) this.dirty = true
+  }
+
+  private applyPendingRouting(): void {
+    if (this.pendingRouting === undefined) return
+    this.ctx.routing = this.pendingRouting
+    this.pendingRouting = undefined
+  }
+
+  /** What the UI shows: whether a pass is running and how the last one ended. */
+  get status(): {
+    running: boolean
+    lastRunAt: number | undefined
+    lastError: string | undefined
+  } {
+    return {
+      running: this.running,
+      lastRunAt: this.lastRun?.finishedAt,
+      lastError: this.lastRun?.error,
     }
   }
 
@@ -104,6 +144,11 @@ export class SyncEngine {
    */
   async resyncAll(): Promise<void> {
     const { db } = this.ctx
+
+    // The cursors cleared below are per calendar, so the mapping must be the
+    // one the following pass will use. Waiting on a running pass is not
+    // needed: it ends with the coalesced reconcile at the bottom.
+    if (!this.running) this.applyPendingRouting()
 
     // Re-link before syncing. Without this, a resync run against a wiped link
     // table sees every task as new and creates a second event for each one —
