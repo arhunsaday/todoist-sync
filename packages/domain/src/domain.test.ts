@@ -5,6 +5,7 @@ import {
   validateGraph,
   mergeFields,
   canSync,
+  isOwnerEmail,
   toEventSchedule,
   planPair,
 } from './index'
@@ -105,6 +106,13 @@ describe('entitlements', () => {
         10,
       ),
     ).toBe(true)
+  })
+  it('lets the instance owner sync without trial or subscription', () => {
+    expect(canSync({ owner: true, trialEndsAt: 0, subscription: null }, 10)).toBe(true)
+    expect(isOwnerEmail('Me@Example.com', ' other@x.fr, me@example.com ')).toBe(true)
+    expect(isOwnerEmail('me@example.com', '')).toBe(false)
+    expect(isOwnerEmail('me@example.com', 'me@example.co')).toBe(false)
+    expect(isOwnerEmail(null, 'me@example.com')).toBe(false)
   })
   it('does not renew past due grace on notifications', () => {
     expect(

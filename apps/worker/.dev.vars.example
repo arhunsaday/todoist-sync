@@ -11,3 +11,5 @@ STRIPE_WEBHOOK_SECRET=
 STRIPE_PRICE_ID=
 NOTION_WEBHOOK_SECRET=
 NOTION_HANDSHAKE_KEY=
+# Emails (comma separated) that sync without trial or Stripe subscription.
+OWNER_EMAILS=

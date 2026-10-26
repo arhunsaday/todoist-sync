@@ -45,6 +45,7 @@ interface Preview {
   requiresConfirmation: boolean
 }
 interface BillingView {
+  owner?: boolean
   trialEndsAt: number
   subscription: { status: string; periodEnd: number; pastDueSince: number | null } | null
   configured: boolean
@@ -263,11 +264,13 @@ export function Workspace({ demo = false }: { demo?: boolean }) {
           </nav>
           <div className="sidebar-footer">
             <div className="trial-badge">
-              {data.billing.subscription
-                ? 'Votre abonnement Accord'
-                : remaining
-                  ? `${remaining} jours pour trouver votre rythme`
-                  : 'Votre essai est terminé'}
+              {data.billing.owner
+                ? 'Accès propriétaire, sans abonnement'
+                : data.billing.subscription
+                  ? 'Votre abonnement Accord'
+                  : remaining
+                    ? `${remaining} jours pour trouver votre rythme`
+                    : 'Votre essai est terminé'}
               <br />
               <Link to={base + '/billing'}>
                 Gérer mon abonnement <ArrowUpRight size={11} style={{ display: 'inline' }} />

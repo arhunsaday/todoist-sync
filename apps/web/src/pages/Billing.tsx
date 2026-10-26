@@ -59,11 +59,13 @@ export function Billing() {
       <div className="panel billing-hero">
         <div>
           <span className="badge">
-            {w.billing.subscription?.status === 'active'
-              ? 'Abonnement actif'
-              : canSync(w.billing, Date.now())
-                ? 'Essai en cours'
-                : 'Synchronisation suspendue'}
+            {w.billing.owner
+              ? 'Accès propriétaire'
+              : w.billing.subscription?.status === 'active'
+                ? 'Abonnement actif'
+                : canSync(w.billing, Date.now())
+                  ? 'Essai en cours'
+                  : 'Synchronisation suspendue'}
           </span>
           <h2 style={{ marginTop: 18 }}>Tout votre Accord.</h2>
           <MonthlyPrice />

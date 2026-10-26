@@ -2,6 +2,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { AppError, canSync } from '@accord/domain'
 import type { Env } from '../env'
 import { userAction } from './actions'
+import { billing } from '../storage/db'
 export class SyncCoordinator extends DurableObject<Env> {
   private tail: Promise<void> = Promise.resolve()
   private async locked<T>(fn: () => Promise<T>): Promise<T> {
@@ -60,21 +61,8 @@ export class SyncCoordinator extends DurableObject<Env> {
       .bind(userId)
       .first<{ due: number | null }>()
     if (row?.due) {
-      const b = await this.env.DB.prepare(
-        'SELECT trial_ends_at,subscription_json,deleting FROM customers WHERE user_id=?',
-      )
-        .bind(userId)
-        .first<{ trial_ends_at: number; subscription_json: string | null; deleting: number }>()
-      const allowed =
-        b &&
-        b.deleting === 0 &&
-        canSync(
-          {
-            trialEndsAt: b.trial_ends_at,
-            subscription: b.subscription_json ? JSON.parse(b.subscription_json) : null,
-          },
-          Date.now(),
-        )
+      const b = await billing(this.env.DB, userId, this.env.OWNER_EMAILS)
+      const allowed = !b.deleting && canSync(b, Date.now())
       if (allowed) await this.ctx.storage.setAlarm(Math.max(Date.now() + 60000, row.due))
       else await this.ctx.storage.deleteAlarm()
     } else await this.ctx.storage.deleteAlarm()

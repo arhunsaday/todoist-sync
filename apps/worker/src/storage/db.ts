@@ -1,4 +1,4 @@
-import { AppError, type Rule, type Link, type Operation } from '@accord/domain'
+import { AppError, isOwnerEmail, type Rule, type Link, type Operation } from '@accord/domain'
 export interface ConnectionRow {
   id: string
   user_id: string
@@ -45,14 +45,19 @@ export async function connections(db: D1Database, userId: string) {
     await db.prepare('SELECT * FROM connections WHERE user_id=?').bind(userId).all<ConnectionRow>()
   ).results
 }
-export async function billing(db: D1Database, userId: string) {
-  const c = await db.prepare('SELECT * FROM customers WHERE user_id=?').bind(userId).first<{
-    trial_ends_at: number
-    stripe_customer_id: string | null
-    subscription_json: string | null
-    deleting: number
-  }>()
+export async function billing(db: D1Database, userId: string, ownerEmails?: string) {
+  const c = await db
+    .prepare('SELECT c.*,u.email FROM user u LEFT JOIN customers c ON c.user_id=u.id WHERE u.id=?')
+    .bind(userId)
+    .first<{
+      trial_ends_at: number | null
+      stripe_customer_id: string | null
+      subscription_json: string | null
+      deleting: number | null
+      email: string | null
+    }>()
   return {
+    owner: isOwnerEmail(c?.email, ownerEmails),
     trialEndsAt: c?.trial_ends_at ?? 0,
     subscription: c?.subscription_json ? JSON.parse(c.subscription_json) : null,
     customerId: c?.stripe_customer_id ?? null,

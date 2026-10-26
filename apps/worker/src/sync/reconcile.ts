@@ -360,7 +360,7 @@ export async function persistPlan(env: Env, userId: string, rule: Rule, plan: Ru
   ])
 }
 export async function reconcileUser(env: Env, userId: string) {
-  if (!canSync(await billing(env.DB, userId), Date.now())) return
+  if (!canSync(await billing(env.DB, userId, env.OWNER_EMAILS), Date.now())) return
   for (const rule of await listRules(env.DB, userId)) {
     if (rule.status !== 'active') continue
     try {

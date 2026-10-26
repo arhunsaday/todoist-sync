@@ -85,6 +85,14 @@ Le balayage périodique fonctionne sans webhook. Pour activer les notifications 
 On peut aussi fournir `NOTION_WEBHOOK_SECRET` lorsque la subscription est déjà
 vérifiée. Ne pas publier de jeton dans une issue, des logs ou le navigateur.
 
+## Instance personnelle sans Stripe
+
+Pour un usage personnel, renseigner le secret `OWNER_EMAILS` avec l’adresse du
+compte Google utilisé pour se connecter (plusieurs adresses séparées par des
+virgules). Ces comptes synchronisent sans essai ni abonnement : aucune
+configuration Stripe ni Notion n’est nécessaire. Les autres comptes gardent
+l’essai de 14 jours puis la suspension habituelle.
+
 ## Stripe
 
 Configurer Stripe en mode test avant le mode live. Créer un produit récurrent

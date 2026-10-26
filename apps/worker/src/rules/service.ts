@@ -9,7 +9,7 @@ export async function requireRule(env: Env, userId: string, id: string) {
   return r
 }
 export async function assertCanWrite(env: Env, userId: string, rule: Rule) {
-  const b = await billing(env.DB, userId)
+  const b = await billing(env.DB, userId, env.OWNER_EMAILS)
   if (b.deleting)
     throw new AppError('ACCOUNT_DELETING', 'Ce compte est en cours de suppression.', 403)
   if (!canSync(b, Date.now()))

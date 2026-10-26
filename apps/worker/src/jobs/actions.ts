@@ -35,7 +35,7 @@ export async function userAction(
       )
         .bind(userId)
         .first<{ synced: number | null; errors: number | null }>()
-      const b = await billing(env.DB, userId)
+      const b = await billing(env.DB, userId, env.OWNER_EMAILS)
       return {
         user,
         rules: await listRules(env.DB, userId),
@@ -49,6 +49,7 @@ export async function userAction(
         warnings: discovered.warnings,
         activity,
         billing: {
+          owner: b.owner,
           trialEndsAt: b.trialEndsAt,
           subscription: b.subscription,
           configured: !!(env.STRIPE_SECRET_KEY && env.STRIPE_PRICE_ID),

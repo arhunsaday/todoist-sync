@@ -41,7 +41,7 @@ export async function activateRule(
   input: { token: string; revision: number; confirmMass?: boolean },
 ) {
   const rule = await requireRule(env, userId, id)
-  if (!canSync(await billing(env.DB, userId), Date.now()))
+  if (!canSync(await billing(env.DB, userId, env.OWNER_EMAILS), Date.now()))
     throw new AppError(
       'BILLING_REQUIRED',
       'Activez votre abonnement pour démarrer cette synchronisation.',

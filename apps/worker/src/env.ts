@@ -17,6 +17,8 @@ export interface Env {
   STRIPE_PRICE_ID?: string
   NOTION_WEBHOOK_SECRET?: string
   NOTION_HANDSHAKE_KEY?: string
+  /** Comma-separated emails that sync without Stripe (personal instance). */
+  OWNER_EMAILS?: string
   STRIPE_PRICE_AMOUNT: string
   STRIPE_PRICE_CURRENCY: string
 }
