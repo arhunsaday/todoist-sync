@@ -8,6 +8,8 @@ It runs as one small Node service with a web UI. You connect your accounts,
 pair projects with calendars and change options in the UI. No redeploy is
 needed.
 
+![Overview: connected accounts, sync status and active pairs](docs/screenshots/overview.png)
+
 ## What syncs
 
 | Todoist | Google Calendar |
